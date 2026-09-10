@@ -2,10 +2,12 @@ import datetime
 import sqlite3
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
+
 import fundamentals
 
-# Configuration Streamlit
+# --- CONFIGURATION PAGE STREAMLIT ---
 st.set_page_config(
     page_title="BRVM Quantum Analytics", page_icon="📈", layout="wide"
 )
@@ -13,15 +15,88 @@ st.set_page_config(
 DB_NAME = "brvm.db"
 
 
-# --- BASE DE DONNÉES ---
+# --- INITIALISATION ET BDD SQLITE ---
+def init_tables_sqlite():
+    """Initialise les tables SQLite sans altérer les données existantes."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+
+    # 1. Table Portefeuille
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS portefeuille (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticker TEXT,
+            quantite INTEGER,
+            prix_achat REAL,
+            date_achat TEXT
+        )
+    """)
+
+    # 2. Table Suivi Longitudinal avec Horodatage du Grade (Partie III, IV, V - MBC-METH-2026-07-001)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS suivi_longitudinal (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticker TEXT NOT NULL,
+            semaine TEXT NOT NULL,
+            date_enregistrement TEXT,
+            score_fondamental REAL,
+            grade_zone TEXT DEFAULT 'NE',
+            date_grade TEXT,
+            ratio_liquidite REAL,
+            commentaire TEXT,
+            UNIQUE(ticker, semaine) ON CONFLICT REPLACE
+        )
+    """)
+
+    # Migration douce au cas où la colonne date_grade manquait
+    try:
+        cursor.execute(
+            "ALTER TABLE suivi_longitudinal ADD COLUMN date_grade TEXT"
+        )
+    except sqlite3.OperationalError:
+        pass  # La colonne existe déjà
+
+    conn.commit()
+    conn.close()
+
+
+def verifier_peremption_grade(grade, date_grade_str):
+    """Applique la règle de péremption des 21 jours (3 semaines) - Partie III."""
+    if not grade or grade == "NE":
+        return "NE (Non Évalué)", "gray", False
+
+    if not date_grade_str:
+        return f"Grade {grade} (Date inconnue)", "orange", True
+
+    try:
+        date_g = datetime.datetime.strptime(
+            date_grade_str, "%Y-%m-%d"
+        ).date()
+        jours_ecoules = (datetime.date.today() - date_g).days
+
+        if jours_ecoules > 21:
+            return (
+                f"Grade {grade} ⚠️ Périmé ({jours_ecoules}j - À revalider)",
+                "red",
+                True,
+            )
+        else:
+            return (
+                f"Grade {grade} ✅ Valide ({jours_ecoules}j)",
+                "green",
+                False,
+            )
+    except Exception:
+        return f"Grade {grade}", "blue", False
+
+
 def charger_donnees_screening():
     try:
         conn = sqlite3.connect(DB_NAME)
         df = pd.read_sql_query("SELECT * FROM screening", conn)
         conn.close()
         return df
-    except Exception as e:
-        st.error(f"Erreur de lecture de la base : {e}")
+    except Exception:
         return pd.DataFrame()
 
 
@@ -34,22 +109,6 @@ def charger_historique_ticker(ticker):
         return df
     except Exception:
         return pd.DataFrame()
-
-
-def init_table_portefeuille():
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS portefeuille (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            ticker TEXT,
-            quantite INTEGER,
-            prix_achat REAL,
-            date_achat TEXT
-        )
-    """)
-    conn.commit()
-    conn.close()
 
 
 def charger_portefeuille():
@@ -84,9 +143,117 @@ def supprimer_position(position_id):
     conn.close()
 
 
-# Initialisations
-init_table_portefeuille()
+def enregistrer_suivi_semaine(
+    ticker,
+    semaine,
+    score,
+    grade="NE",
+    date_grade=None,
+    ratio_liq=None,
+    commentaire="",
+    date_eng=None,
+):
+    today_str = datetime.date.today().strftime("%Y-%m-%d")
+    if date_eng is None:
+        date_eng = today_str
+    if date_grade is None or grade == "NE":
+        date_grade = today_str if grade != "NE" else None
+
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO suivi_longitudinal 
+        (ticker, semaine, date_enregistrement, score_fondamental, grade_zone, date_grade, ratio_liquidite, commentaire)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(ticker, semaine) DO UPDATE SET
+            date_enregistrement = excluded.date_enregistrement,
+            score_fondamental = excluded.score_fondamental,
+            grade_zone = excluded.grade_zone,
+            date_grade = excluded.date_grade,
+            ratio_liquidite = excluded.ratio_liquidite,
+            commentaire = excluded.commentaire
+    """,
+        (
+            ticker,
+            semaine,
+            date_eng,
+            score,
+            grade,
+            date_grade,
+            ratio_liq,
+            commentaire,
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+def charger_suivi_longitudinal():
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        df = pd.read_sql_query(
+            "SELECT * FROM suivi_longitudinal ORDER BY ticker, semaine ASC",
+            conn,
+        )
+        conn.close()
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
+def creer_jauge_concentration(titre, valeur, seuil, max_val=100):
+    """Génère un graphique Plotly de jauge semi-circulaire pour le contrôle de risque."""
+    est_depasse = valeur > seuil
+    couleur_barre = "#FF2B2B" if est_depasse else "#00CC96"
+
+    fig = go.Figure(
+        go.Indicator(
+            mode="gauge+number",
+            value=round(valeur, 1),
+            number={"suffix": "%", "font": {"size": 24}},
+            title={
+                "text": f"<b>{titre}</b><br><span style='font-size:0.8em;color:gray'>Seuil Max : {seuil}%</span>",
+                "font": {"size": 14},
+            },
+            gauge={
+                "axis": {
+                    "range": [0, max_val],
+                    "tickwidth": 1,
+                    "tickcolor": "gray",
+                },
+                "bar": {"color": couleur_barre},
+                "bgcolor": "white",
+                "borderwidth": 1,
+                "bordercolor": "gray",
+                "steps": [
+                    {"range": [0, seuil], "color": "rgba(0, 204, 150, 0.15)"},
+                    {
+                        "range": [seuil, max_val],
+                        "color": "rgba(255, 43, 43, 0.2)",
+                    },
+                ],
+                "threshold": {
+                    "line": {"color": "red", "width": 4},
+                    "thickness": 0.75,
+                    "value": seuil,
+                },
+            },
+        )
+    )
+    fig.update_layout(
+        height=210,
+        margin=dict(l=20, r=20, t=50, b=10),
+        font={"family": "Arial"},
+    )
+    return fig
+
+
+# Lancement DB
+init_tables_sqlite()
 df_screening = charger_donnees_screening()
+financials_dict = fundamentals.charger_financials()
+
 
 # --- BARRE LATÉRALE ---
 st.sidebar.title("🎛️ Panneau de Contrôle")
@@ -151,11 +318,14 @@ if not df_filtre.empty:
     if "Volume" in df_filtre.columns:
         df_filtre = df_filtre[df_filtre["Volume"] >= min_volume]
 
-# --- CORPS PRINCIPAL ---
+
+# --- EN-TÊTE PRINCIPAL ---
 st.title("📊 BRVM Quantum Analytics")
 
 if df_screening.empty:
-    st.warning("Aucune donnée. Exécutez `boc_scraper.py` pour alimenter la base.")
+    st.warning(
+        "Aucune donnée dans la base. Exécutez `boc_scraper.py` pour alimenter le screener."
+    )
 else:
     tab1, tab2, tab3, tab4 = st.tabs(
         [
@@ -166,7 +336,7 @@ else:
         ]
     )
 
-    # --- ONGLET 1 : SCREENER ---
+    # --- ONGLET 1 : SCREENER & HISTORIQUE ---
     with tab1:
         k1, k2, k3, k4 = st.columns(4)
         k1.metric(
@@ -196,7 +366,9 @@ else:
 
         st.markdown("---")
         ticker_choisi = st.selectbox(
-            "Historique du cours :", df_screening["Ticker"].unique()
+            "Historique du cours :",
+            df_screening["Ticker"].unique(),
+            key="s1_t",
         )
         df_hist = charger_historique_ticker(ticker_choisi)
         if not df_hist.empty:
@@ -209,7 +381,7 @@ else:
             )
             st.plotly_chart(fig, use_container_width=True)
 
-    # --- ONGLET 2 : SIMULATEUR SGI ---
+    # --- ONGLET 2 : SIMULATEUR DE FRAIS SGI ---
     with tab2:
         st.subheader("Simulateur de Rendement Net SGI")
         c1, c2, c3 = st.columns(3)
@@ -253,7 +425,7 @@ else:
         m3.metric("Gain Net", f"{gain_net:,.0f} FCFA", delta=f"{roi_net:.2f}%")
         m4.metric("Seuil Rentrabilité", f"{breakeven:,.0f} FCFA")
 
-    # --- ONGLET 3 : PORTEFEUILLE ---
+    # --- ONGLET 3 : MON PORTEFEUILLE & CONTRÔLE DES RISQUES ---
     with tab3:
         st.subheader("📌 Ajouter une Ligne d'Achat")
         col_p1, col_p2, col_p3, col_p4 = st.columns(4)
@@ -329,6 +501,10 @@ else:
                 df_merged["Gain Net FCFA"] / df_merged["Investissement Total"]
             ) * 100
 
+            df_merged["Secteur"] = df_merged["ticker"].apply(
+                lambda t: financials_dict.get(t, {}).get("Secteur", "Inconnu")
+            )
+
             tot_investi = df_merged["Investissement Total"].sum()
             tot_valeur_nette = df_merged["Valeur Nette Estimation"].sum()
             tot_gain_net = tot_valeur_nette - tot_investi
@@ -338,18 +514,83 @@ else:
 
             kp1, kp2, kp3, kp4 = st.columns(4)
             kp1.metric("Capital Investi", f"{tot_investi:,.0f} FCFA")
-            kp2.metric("Valeur Nette", f"{tot_valeur_nette:,.0f} FCFA")
+            kp2.metric("Valeur Nette Total", f"{tot_valeur_nette:,.0f} FCFA")
             kp3.metric(
                 "Gain Net FCFA",
                 f"{tot_gain_net:,.0f} FCFA",
                 delta=f"{tot_perf_pct:.2f}%",
             )
-            kp4.metric("Lignes", len(df_merged))
+            kp4.metric("Lignes Ouvertes", len(df_merged))
+
+            st.markdown("---")
+            st.markdown("### 🛡️ Contrôle & Jauges de Risque (Partie X)")
+
+            df_poids_ligne = (
+                df_merged.groupby("ticker")["Valeur Nette Estimation"]
+                .sum()
+                .reset_index()
+            )
+            df_poids_ligne["Poids (%)"] = (
+                df_poids_ligne["Valeur Nette Estimation"] / tot_valeur_nette
+            ) * 100
+
+            df_poids_secteur = (
+                df_merged.groupby("Secteur")["Valeur Nette Estimation"]
+                .sum()
+                .reset_index()
+            )
+            df_poids_secteur["Poids (%)"] = (
+                df_poids_secteur["Valeur Nette Estimation"] / tot_valeur_nette
+            ) * 100
+
+            max_ligne = df_poids_ligne.sort_values(
+                "Poids (%)", ascending=False
+            ).iloc[0]
+            max_secteur = df_poids_secteur.sort_values(
+                "Poids (%)", ascending=False
+            ).iloc[0]
+
+            jauge_col1, jauge_col2 = st.columns(2)
+
+            with jauge_col1:
+                fig_jauge_ligne = creer_jauge_concentration(
+                    f"Ligne max ({max_ligne['ticker']})",
+                    max_ligne["Poids (%)"],
+                    seuil=15.0,
+                )
+                st.plotly_chart(fig_jauge_ligne, use_container_width=True)
+
+                if max_ligne["Poids (%)"] > 15.0:
+                    st.error(
+                        f"🚨 **Dépassement Ligne** : **{max_ligne['ticker']}** fait **{max_ligne['Poids (%)']:.1f}%** du portefeuille (Seuil : 15%). Renforcement **BLOQUÉ**."
+                    )
+                else:
+                    st.success(
+                        f"✅ **Ligne Conforme** : **{max_ligne['ticker']}** à **{max_ligne['Poids (%)']:.1f}%** (≤ 15%)."
+                    )
+
+            with jauge_col2:
+                fig_jauge_secteur = creer_jauge_concentration(
+                    f"Secteur max ({max_secteur['Secteur']})",
+                    max_secteur["Poids (%)"],
+                    seuil=50.0,
+                )
+                st.plotly_chart(fig_jauge_secteur, use_container_width=True)
+
+                if max_secteur["Poids (%)"] > 50.0:
+                    st.error(
+                        f"🚨 **Dépassement Secteur** : **{max_secteur['Secteur']}** fait **{max_secteur['Poids (%)']:.1f}%** du portefeuille (Seuil : 50%). Renforcement **BLOQUÉ**."
+                    )
+                else:
+                    st.success(
+                        f"✅ **Secteur Conforme** : **{max_secteur['Secteur']}** à **{max_secteur['Poids (%)']:.1f}%** (≤ 50%)."
+                    )
 
             st.markdown("---")
             cols_show = [
                 "id",
                 "ticker",
+                "Secteur",
                 "quantite",
                 "prix_achat",
                 "Cours Actuel",
@@ -372,15 +613,15 @@ else:
                 use_container_width=True,
             )
 
-            with st.expander("🗑️ Supprimer une ligne"):
+            with st.expander("🗑️ Supprimer une ligne de position"):
                 del_id = st.selectbox(
-                    "ID à supprimer :", df_merged["id"].tolist()
+                    "Sélectionner l'ID à supprimer :", df_merged["id"].tolist()
                 )
-                if st.button("Confirmer"):
+                if st.button("Confirmer la suppression"):
                     supprimer_position(del_id)
                     st.rerun()
 
-    # --- ONGLET 4 : ANALYSE FONDAMENTALE & VALUE ---
+    # --- ONGLET 4 : ANALYSE FONDAMENTALE & TRAÇABILITÉ DES GRADES ---
     with tab4:
         st.subheader("🔬 Analyse Fondamentale & Valuation (Graham / Value)")
 
@@ -402,10 +643,9 @@ else:
 
         if an is None:
             st.info(
-                f"Données fondamentales indisponibles pour **{ticker_fund}**."
+                f"Données fondamentales indisponibles dans `financials.json` pour **{ticker_fund}**."
             )
         else:
-            # En-tête Métriques
             fc1, fc2, fc3, fc4 = st.columns(4)
             fc1.metric("Score Fondamental", f"{an['score_composite']} / 100")
             fc2.metric("Rendement Dividende", f"{an['dividend_yield']} %")
@@ -418,7 +658,6 @@ else:
 
             st.markdown("---")
 
-            # Cartes d'Analyse Ratios
             r_col1, r_col2 = st.columns(2)
             with r_col1:
                 st.markdown("### 📊 Valorisation & Rentabilité")
@@ -435,7 +674,7 @@ else:
                 st.write(f"* **ROE (Rentabilité FP)** : `{an['roe']} %`")
 
             with r_col2:
-                st.markdown("### 💰 Dividende & Décote Graham")
+                st.markdown("### 💰 Dividende & Marge de Sécurité")
                 st.write(
                     f"* **Dividende par Action** : `{an['dividende']:,.2f} FCFA`"
                 )
@@ -452,11 +691,109 @@ else:
                     f"* **Seuil Théorique de Graham** : `{an['nombre_graham']:,.0f} FCFA`"
                 )
 
-                if an["marge_securite_graham"] > 0:
+            # --- PARTIE V & III : TRAÇABILITÉ DES GRADES ET SUIVI LONGITUDINAL ---
+            st.markdown("---")
+            st.subheader(
+                "📜 Traçabilité des Grades (Gate) & Suivi Longitudinal (Parties III, IV, V)"
+            )
+
+            # Récupération du dernier grade pour le titre sélectionné
+            df_long = charger_suivi_longitudinal()
+            grade_actuel_str = "NE (Non Évalué)"
+
+            if not df_long.empty:
+                df_t = df_long[df_long["ticker"] == ticker_fund]
+                if not df_t.empty:
+                    dernier_releve = df_t.sort_values("id").iloc[-1]
+                    lbl, color, est_perime = verifier_peremption_grade(
+                        dernier_releve.get("grade_zone"),
+                        dernier_releve.get("date_grade"),
+                    )
+                    st.markdown(
+                        f"#### **Statut Graphique Actuel** : `{lbl}` (Date d'obtention : `{dernier_releve.get('date_grade', 'N/A')}`)"
+                    )
+                    if est_perime:
+                        st.warning(
+                            "⚠️ **Règle de Péremption (Partie III)** : Ce grade a plus de 21 jours sans revalidation. Veuillez procéder à une nouvelle validation graphique avant toute décision."
+                        )
+
+            with st.expander(
+                f"📝 Valider / Revalider le Grade et le Score de {ticker_fund}"
+            ):
+                col_s1, col_s2, col_s3, col_s4, col_s5 = st.columns(5)
+                with col_s1:
+                    s_semaine = st.text_input(
+                        "Identifiant Semaine / BOC",
+                        value="S1",
+                        key="s_sem",
+                        help="Ex: S1, S2, ou BOC_168",
+                    )
+                with col_s2:
+                    s_grade = st.selectbox(
+                        "Grade de Zone (Gate)",
+                        ["NE", "A", "B", "C"],
+                        key="s_grd",
+                        help="Partie III : Grade A (Taille pleine), B (Demi-taille), C (Tactique)",
+                    )
+                with col_s3:
+                    s_date_grade = st.date_input(
+                        "Date de Validation Graphique",
+                        value=datetime.date.today(),
+                        key="s_dt_g",
+                        help="Date d'évaluation graphique (Horodatage)",
+                    )
+                with col_s4:
+                    s_ratio = st.number_input(
+                        "Ratio Liquidité",
+                        value=0.0,
+                        step=0.1,
+                        key="s_rat",
+                        help="Volume jour / Vente résiduelle",
+                    )
+                with col_s5:
+                    s_comm = st.text_input(
+                        "Commentaire / Alerte", value="RAS", key="s_com"
+                    )
+
+                if st.button("💾 Sauvegarder dans la table `suivi_longitudinal`"):
+                    enregistrer_suivi_semaine(
+                        ticker=ticker_fund,
+                        semaine=s_semaine,
+                        score=an["score_composite"],
+                        grade=s_grade,
+                        date_grade=str(s_date_grade)
+                        if s_grade != "NE"
+                        else None,
+                        ratio_liq=s_ratio if s_ratio > 0 else None,
+                        commentaire=s_comm,
+                    )
                     st.success(
-                        f"💡 **Décote de valeur** : L'action se négocie avec **{an['marge_securite_graham']:.1f}% de marge de sécurité** sous son prix de Graham."
+                        f"Horodatage et Grade de {ticker_fund} enregistrés pour {s_semaine} !"
                     )
-                else:
-                    st.warning(
-                        f"⚠️ **Surcote relative** : Le cours actuel dépasse de **{abs(an['marge_securite_graham']):.1f}%** le Nombre de Graham."
+                    st.rerun()
+
+            # Affichage du tableau pivot cumulatif avec Horodatages
+            if not df_long.empty:
+                st.markdown("#### 📊 Évolution Multisemaines des Scores par Titre")
+
+                df_pivot = df_long.pivot(
+                    index="ticker",
+                    columns="semaine",
+                    values="score_fondamental",
+                )
+
+                # Récupération et formatage des derniers grades avec date
+                df_last = df_long.sort_values("id").groupby("ticker").last()
+
+                def format_grade_info(row):
+                    lbl, _, _ = verifier_peremption_grade(
+                        row.get("grade_zone"), row.get("date_grade")
                     )
+                    return lbl
+
+                df_pivot["Grade Actuel & Horodatage"] = df_last.apply(
+                    format_grade_info, axis=1
+                )
+                df_pivot["Dernier Commentaire"] = df_last["commentaire"]
+
+                st.dataframe(df_pivot, use_container_width=True)
