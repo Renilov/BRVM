@@ -1,9 +1,10 @@
 import sqlite3
+import datetime
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-# Configuration de la page Streamlit
+# Configuration Streamlit
 st.set_page_config(
     page_title="BRVM Quantum Analytics", page_icon="📈", layout="wide"
 )
@@ -11,20 +12,19 @@ st.set_page_config(
 DB_NAME = "brvm.db"
 
 
+# --- FONCTIONS BASE DE DONNÉES ---
 def charger_donnees_screening():
-    """Charge les données actuelles depuis SQLite."""
     try:
         conn = sqlite3.connect(DB_NAME)
         df = pd.read_sql_query("SELECT * FROM screening", conn)
         conn.close()
         return df
     except Exception as e:
-        st.error(f"Erreur de lecture de la base de données : {e}")
+        st.error(f"Erreur de lecture de la base : {e}")
         return pd.DataFrame()
 
 
 def charger_historique_ticker(ticker):
-    """Charge l'historique d'un titre spécifique."""
     try:
         conn = sqlite3.connect(DB_NAME)
         query = "SELECT date, cours, volume FROM historique WHERE ticker = ? ORDER BY date ASC"
@@ -35,47 +35,93 @@ def charger_historique_ticker(ticker):
         return pd.DataFrame()
 
 
-# Chargement des données
+def init_table_portefeuille():
+    """Crée la table de portefeuille si elle n'existe pas."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS portefeuille (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticker TEXT,
+            quantite INTEGER,
+            prix_achat REAL,
+            date_achat TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+
+def charger_portefeuille():
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        df = pd.read_sql_query("SELECT * FROM portefeuille", conn)
+        conn.close()
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
+def ajouter_position(ticker, quantite, prix_achat, date_achat):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO portefeuille (ticker, quantite, prix_achat, date_achat)
+        VALUES (?, ?, ?, ?)
+    """,
+        (ticker, quantite, prix_achat, date_achat),
+    )
+    conn.commit()
+    conn.close()
+
+
+def supprimer_position(position_id):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM portefeuille WHERE id = ?", (position_id,))
+    conn.commit()
+    conn.close()
+
+
+# Initialisation des tables
+init_table_portefeuille()
 df_screening = charger_donnees_screening()
 
-# --- BARRE LATÉRALE : FILTRES & CONFIGURATION ---
+# --- BARRE LATÉRALE ---
 st.sidebar.title("🎛️ Panneau de Contrôle")
-
 st.sidebar.header("🔍 Filtres du Screener")
 
-# 1. Filtre Recherche Ticker
 recherche_ticker = st.sidebar.text_input(
     "Rechercher un Ticker :", ""
 ).strip().upper()
 
-# 2. Filtre Plage de Variation (%)
 if not df_screening.empty and "Variation (%)" in df_screening.columns:
     min_var_val = float(df_screening["Variation (%)"].min())
     max_var_val = float(df_screening["Variation (%)"].max())
-    if min_var_val < max_var_val:
-        var_range = st.sidebar.slider(
-            "Intervalle de Variation (%) :",
+    var_range = (
+        st.sidebar.slider(
+            "Intervalle Variation (%) :",
             min_value=min_var_val,
             max_value=max_var_val,
             value=(min_var_val, max_var_val),
             step=0.5,
         )
-    else:
-        var_range = (-10.0, 10.0)
+        if min_var_val < max_var_val
+        else (-10.0, 10.0)
+    )
 else:
     var_range = (-100.0, 100.0)
 
-# 3. Filtre Volume Minimum
-if not df_screening.empty and "Volume" in df_screening.columns:
-    min_volume = st.sidebar.number_input(
+min_volume = (
+    st.sidebar.number_input(
         "Volume minimum :", min_value=0, value=0, step=100
     )
-else:
-    min_volume = 0
+    if not df_screening.empty and "Volume" in df_screening.columns
+    else 0
+)
 
 st.sidebar.markdown("---")
-
-# 4. Configuration des frais SGI
 st.sidebar.header("⚙️ Configuration SGI")
 taux_frais_sgi = (
     st.sidebar.slider(
@@ -84,12 +130,11 @@ taux_frais_sgi = (
         max_value=3.0,
         value=1.5,
         step=0.1,
-        help="Frais de courtage SGI + redevances BRVM + TVA",
     )
     / 100
 )
 
-# --- APPLICATION DES FILTRES SUR LE SCREENING ---
+# Filtre Screening
 df_filtre = df_screening.copy()
 if not df_filtre.empty:
     if recherche_ticker:
@@ -106,152 +151,272 @@ if not df_filtre.empty:
     if "Volume" in df_filtre.columns:
         df_filtre = df_filtre[df_filtre["Volume"] >= min_volume]
 
-# --- CORPS PRINCIPAL ---
+# --- APPLICATION PRINCIPALE ---
 st.title("📊 BRVM Quantum Analytics")
 
 if df_screening.empty:
-    st.warning(
-        "Aucune donnée disponible dans la base. Lancez le scraper pour alimenter `brvm.db`."
-    )
+    st.warning("Aucune donnée. Exécutez `boc_scraper.py` pour alimenter la base.")
 else:
-    tab1, tab2 = st.tabs(
-        ["📈 Screener & Graphiques", "🧮 Simulateur d'Investissement (Nets SGI)"]
+    tab1, tab2, tab3 = st.tabs(
+        [
+            "📈 Screener & Graphiques",
+            "🧮 Simulateur (Nets SGI)",
+            "💼 Mon Portefeuille",
+        ]
     )
 
-    # --- ONGLET 1 : SCREENER & FILTRES ---
+    # --- ONGLET 1 : SCREENER ---
     with tab1:
-        # KPI d'en-tête
-        kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-        nb_filtre = len(df_filtre)
-        hausses = (
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("Actions Sélectionnées", f"{len(df_filtre)} / {len(df_screening)}")
+        k2.metric(
+            "Hausses 🚀",
             len(df_filtre[df_filtre["Variation (%)"] > 0])
             if "Variation (%)" in df_filtre.columns
-            else 0
+            else 0,
         )
-        baisses = (
+        k3.metric(
+            "Baisses 🔻",
             len(df_filtre[df_filtre["Variation (%)"] < 0])
             if "Variation (%)" in df_filtre.columns
-            else 0
+            else 0,
         )
-        vol_total = (
-            df_filtre["Volume"].sum()
+        k4.metric(
+            "Volume Filtré",
+            f"{df_filtre['Volume'].sum():,.0f}"
             if "Volume" in df_filtre.columns
-            else 0
+            else "0",
         )
-
-        kpi1.metric("Actions Sélectionnées", f"{nb_filtre} / {len(df_screening)}")
-        kpi2.metric("Hausses 🚀", hausses)
-        kpi3.metric("Baisses 🔻", baisses)
-        kpi4.metric("Volume Filtré", f"{vol_total:,.0f}")
 
         st.markdown("---")
-        st.subheader("Tableau du Marché (Filtré)")
         st.dataframe(df_filtre, use_container_width=True)
 
         st.markdown("---")
-        st.subheader("Analyse Historique")
-        tickers_disponibles = (
-            df_filtre["Ticker"].unique()
-            if not df_filtre.empty
-            else df_screening["Ticker"].unique()
-        )
         ticker_choisi = st.selectbox(
-            "Sélectionnez une action pour afficher son cours :",
-            tickers_disponibles,
+            "Historique du cours :", df_screening["Ticker"].unique()
         )
-
         df_hist = charger_historique_ticker(ticker_choisi)
         if not df_hist.empty:
             fig = px.line(
                 df_hist,
                 x="date",
                 y="cours",
-                title=f"Évolution du cours - {ticker_choisi}",
-                labels={"date": "Date", "cours": "Cours (FCFA)"},
+                title=f"Évolution - {ticker_choisi}",
                 markers=True,
             )
             st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("Aucun historique encore enregistré pour cette action.")
 
     # --- ONGLET 2 : SIMULATEUR SGI ---
     with tab2:
-        st.subheader("Simulateur de Rendement Net (Frais SGI inclus)")
-
-        col_input1, col_input2, col_input3 = st.columns(3)
-
-        with col_input1:
+        st.subheader("Simulateur de Rendement Net SGI")
+        c1, c2, c3 = st.columns(3)
+        with c1:
             action_simu = st.selectbox(
-                "Action à simuler :",
-                df_screening["Ticker"].unique(),
-                key="sim_ticker",
+                "Action :", df_screening["Ticker"].unique(), key="sim_t"
             )
-            cours_actuel = (
-                df_screening.loc[
-                    df_screening["Ticker"] == action_simu, "Cours (FCFA)"
-                ].values[0]
-                if "Cours (FCFA)" in df_screening.columns
-                else 1000
-            )
-
-        with col_input2:
+            cours_actuel = df_screening.loc[
+                df_screening["Ticker"] == action_simu, "Cours (FCFA)"
+            ].values[0]
+        with c2:
             prix_achat = st.number_input(
-                "Prix d'achat unitaire (FCFA)",
+                "Prix Achat Unitaire (FCFA)",
                 value=float(cours_actuel),
                 step=50.0,
             )
-            quantite = st.number_input(
-                "Nombre d'actions", value=100, min_value=1
-            )
-
-        with col_input3:
-            prix_vente_cible = st.number_input(
-                "Prix de revente estimé (FCFA)",
+            quantite = st.number_input("Quantité", value=100, min_value=1)
+        with c3:
+            prix_vente = st.number_input(
+                "Prix Vente Estimé (FCFA)",
                 value=float(round(cours_actuel * 1.1)),
                 step=50.0,
             )
 
-        # Calculs SGI
         capital_brut = quantite * prix_achat
         frais_achat = capital_brut * taux_frais_sgi
-        cout_total_investi = capital_brut + frais_achat
-        prix_revient_unitaire = cout_total_investi / quantite
+        cout_total = capital_brut + frais_achat
 
-        produit_brut_vente = quantite * prix_vente_cible
-        frais_vente = produit_brut_vente * taux_frais_sgi
-        produit_net_vente = produit_brut_vente - frais_vente
+        prod_brut = quantite * prix_vente
+        frais_vente = prod_brut * taux_frais_sgi
+        prod_net = prod_brut - frais_vente
 
-        total_frais_sgi = frais_achat + frais_vente
-        gain_brut = produit_brut_vente - capital_brut
-        gain_net = produit_net_vente - cout_total_investi
-        rendement_net_pct = (
-            (gain_net / cout_total_investi) * 100 if cout_total_investi > 0 else 0
-        )
-        prix_breakeven = prix_achat * (
-            (1 + taux_frais_sgi) / (1 - taux_frais_sgi)
-        )
+        gain_net = prod_net - cout_total
+        roi_net = (gain_net / cout_total) * 100
+        breakeven = prix_achat * ((1 + taux_frais_sgi) / (1 - taux_frais_sgi))
 
         st.markdown("---")
-
         m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Capital Inverti Total", f"{cout_total_investi:,.0f} FCFA")
-        m2.metric("Total Frais SGI", f"{total_frais_sgi:,.0f} FCFA")
-        m3.metric(
-            "Gain Net Réel",
-            f"{gain_net:,.0f} FCFA",
-            delta=f"{rendement_net_pct:.2f}%",
-        )
-        m4.metric(
-            "Seuil de Rentrabilité", f"{prix_breakeven:,.0f} FCFA"
-        )
+        m1.metric("Capital Total Investi", f"{cout_total:,.0f} FCFA")
+        m2.metric("Total Frais SGI", f"{(frais_achat + frais_vente):,.0f} FCFA")
+        m3.metric("Gain Net", f"{gain_net:,.0f} FCFA", delta=f"{roi_net:.2f}%")
+        m4.metric("Seuil Rentrabilité", f"{breakeven:,.0f} FCFA")
 
-        st.markdown("**Synthèse financière de la transaction :**")
-        st.write(
-            f"* **Prix de revient net par action** : `{prix_revient_unitaire:,.2f} FCFA`"
-        )
-        st.write(
-            f"* **Plus-value brute (hors frais)** : `{gain_brut:,.0f} FCFA`"
-        )
-        st.write(
-            f"* **Hausse minimale requise pour breakeven** : `{((prix_breakeven/prix_achat)-1)*100:.2f}%`"
-        )
+    # --- ONGLET 3 : GESTION DE PORTEFEUILLE ---
+    with tab3:
+        st.subheader("📌 Ajouter une Ligne d'Achat")
+
+        col_p1, col_p2, col_p3, col_p4 = st.columns(4)
+        with col_p1:
+            p_ticker = st.selectbox(
+                "Action :", df_screening["Ticker"].unique(), key="p_tick"
+            )
+            cours_ref = df_screening.loc[
+                df_screening["Ticker"] == p_ticker, "Cours (FCFA)"
+            ].values[0]
+        with col_p2:
+            p_qte = st.number_input(
+                "Quantité :", min_value=1, value=50, key="p_q"
+            )
+        with col_p3:
+            p_prix = st.number_input(
+                "Prix d'Achat Unitaire (FCFA) :",
+                value=float(cours_ref),
+                step=50.0,
+                key="p_pr",
+            )
+        with col_p4:
+            p_date = st.date_input(
+                "Date d'achat :", datetime.date.today(), key="p_d"
+            )
+
+        if st.button("➕ Ajouter la position au portefeuille"):
+            ajouter_position(p_ticker, p_qte, p_prix, str(p_date))
+            st.success(f"Position sur {p_ticker} ajoutée !")
+            st.rerun()
+
+        st.markdown("---")
+        st.subheader("💼 État Actuel du Portefeuille")
+
+        df_port = charger_portefeuille()
+
+        if df_port.empty:
+            st.info(
+                "Votre portefeuille est actuellement vide. Ajoutez une première position ci-dessus."
+            )
+        else:
+            # Fusion avec le cours du jour
+            df_merged = df_port.merge(
+                df_screening[["Ticker", "Cours (FCFA)"]],
+                left_on="ticker",
+                right_on="Ticker",
+                how="left",
+            )
+            df_merged["Cours Actuel"] = df_merged["Cours (FCFA)"].fillna(
+                df_merged["prix_achat"]
+            )
+
+            # Calculs financiers par position
+            df_merged["Cout Achat Brut"] = (
+                df_merged["quantite"] * df_merged["prix_achat"]
+            )
+            df_merged["Frais Achat"] = (
+                df_merged["Cout Achat Brut"] * taux_frais_sgi
+            )
+            df_merged["Investissement Total"] = (
+                df_merged["Cout Achat Brut"] + df_merged["Frais Achat"]
+            )
+
+            df_merged["Valeur Actuelle Brute"] = (
+                df_merged["quantite"] * df_merged["Cours Actuel"]
+            )
+            df_merged["Frais Vente Est."] = (
+                df_merged["Valeur Actuelle Brute"] * taux_frais_sgi
+            )
+            df_merged["Valeur Nette Estimation"] = (
+                df_merged["Valeur Actuelle Brute"] - df_merged["Frais Vente Est."]
+            )
+
+            df_merged["Gain Net FCFA"] = (
+                df_merged["Valeur Nette Estimation"]
+                - df_merged["Investissement Total"]
+            )
+            df_merged["Performance Net (%)"] = (
+                df_merged["Gain Net FCFA"] / df_merged["Investissement Total"]
+            ) * 100
+
+            # Totaux Portefeuille
+            tot_investi = df_merged["Investissement Total"].sum()
+            tot_valeur_nette = df_merged["Valeur Nette Estimation"].sum()
+            tot_gain_net = tot_valeur_nette - tot_investi
+            tot_perf_pct = (
+                (tot_gain_net / tot_investi) * 100 if tot_investi > 0 else 0
+            )
+
+            # KPIs Globaux
+            kp1, kp2, kp3, kp4 = st.columns(4)
+            kp1.metric(
+                "Capital Investi (frais inclus)", f"{tot_investi:,.0f} FCFA"
+            )
+            kp2.metric(
+                "Valeur Nette Portefeuille", f"{tot_valeur_nette:,.0f} FCFA"
+            )
+            kp3.metric(
+                "Plus/Moins-Value Nette",
+                f"{tot_gain_net:,.0f} FCFA",
+                delta=f"{tot_perf_pct:.2f}%",
+            )
+            kp4.metric(
+                "Nombre de Lignes", len(df_merged)
+            )
+
+            st.markdown("---")
+
+            # Affichage du Tableau avec option de suppression
+            cols_to_show = [
+                "id",
+                "ticker",
+                "quantite",
+                "prix_achat",
+                "Cours Actuel",
+                "Investissement Total",
+                "Valeur Nette Estimation",
+                "Gain Net FCFA",
+                "Performance Net (%)",
+            ]
+            st.dataframe(
+                df_merged[cols_to_show].style.format(
+                    {
+                        "prix_achat": "{:,.0f} FCFA",
+                        "Cours Actuel": "{:,.0f} FCFA",
+                        "Investissement Total": "{:,.0f} FCFA",
+                        "Valeur Nette Estimation": "{:,.0f} FCFA",
+                        "Gain Net FCFA": "{:,.0f} FCFA",
+                        "Performance Net (%)": "{:+.2f}%",
+                    }
+                ),
+                use_container_width=True,
+            )
+
+            # Suppression d'une ligne
+            with st.expander("🗑️ Supprimer une ligne du portefeuille"):
+                del_id = st.selectbox(
+                    "Sélectionnez l'ID de la position à retirer :",
+                    df_merged["id"].tolist(),
+                )
+                if st.button("Confirmer la suppression"):
+                    supprimer_position(del_id)
+                    st.warning(f"Position ID {del_id} supprimée.")
+                    st.rerun()
+
+            # Graphiques Portefeuille
+            st.markdown("---")
+            g1, g2 = st.columns(2)
+            with g1:
+                fig_pie = px.pie(
+                    df_merged,
+                    values="Valeur Nette Estimation",
+                    names="ticker",
+                    title="Répartition du Portefeuille par Action",
+                    hole=0.4,
+                )
+                st.plotly_chart(fig_pie, use_container_width=True)
+
+            with g2:
+                fig_bar = px.bar(
+                    df_merged,
+                    x="ticker",
+                    y="Gain Net FCFA",
+                    color="Gain Net FCFA",
+                    title="Gain / Perte Net par Titre (FCFA)",
+                    color_continuous_scale=["red", "green"],
+                )
+                st.plotly_chart(fig_bar, use_container_width=True)
