@@ -1,8 +1,9 @@
-import sqlite3
 import datetime
+import sqlite3
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+import fundamentals
 
 # Configuration Streamlit
 st.set_page_config(
@@ -12,7 +13,7 @@ st.set_page_config(
 DB_NAME = "brvm.db"
 
 
-# --- FONCTIONS BASE DE DONNÉES ---
+# --- BASE DE DONNÉES ---
 def charger_donnees_screening():
     try:
         conn = sqlite3.connect(DB_NAME)
@@ -36,7 +37,6 @@ def charger_historique_ticker(ticker):
 
 
 def init_table_portefeuille():
-    """Crée la table de portefeuille si elle n'existe pas."""
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute("""
@@ -84,7 +84,7 @@ def supprimer_position(position_id):
     conn.close()
 
 
-# Initialisation des tables
+# Initialisations
 init_table_portefeuille()
 df_screening = charger_donnees_screening()
 
@@ -134,7 +134,7 @@ taux_frais_sgi = (
     / 100
 )
 
-# Filtre Screening
+# Application des filtres
 df_filtre = df_screening.copy()
 if not df_filtre.empty:
     if recherche_ticker:
@@ -151,24 +151,27 @@ if not df_filtre.empty:
     if "Volume" in df_filtre.columns:
         df_filtre = df_filtre[df_filtre["Volume"] >= min_volume]
 
-# --- APPLICATION PRINCIPALE ---
+# --- CORPS PRINCIPAL ---
 st.title("📊 BRVM Quantum Analytics")
 
 if df_screening.empty:
     st.warning("Aucune donnée. Exécutez `boc_scraper.py` pour alimenter la base.")
 else:
-    tab1, tab2, tab3 = st.tabs(
+    tab1, tab2, tab3, tab4 = st.tabs(
         [
             "📈 Screener & Graphiques",
             "🧮 Simulateur (Nets SGI)",
             "💼 Mon Portefeuille",
+            "🔬 Analyse Fondamentale & Value",
         ]
     )
 
     # --- ONGLET 1 : SCREENER ---
     with tab1:
         k1, k2, k3, k4 = st.columns(4)
-        k1.metric("Actions Sélectionnées", f"{len(df_filtre)} / {len(df_screening)}")
+        k1.metric(
+            "Actions Sélectionnées", f"{len(df_filtre)} / {len(df_screening)}"
+        )
         k2.metric(
             "Hausses 🚀",
             len(df_filtre[df_filtre["Variation (%)"] > 0])
@@ -250,10 +253,9 @@ else:
         m3.metric("Gain Net", f"{gain_net:,.0f} FCFA", delta=f"{roi_net:.2f}%")
         m4.metric("Seuil Rentrabilité", f"{breakeven:,.0f} FCFA")
 
-    # --- ONGLET 3 : GESTION DE PORTEFEUILLE ---
+    # --- ONGLET 3 : PORTEFEUILLE ---
     with tab3:
         st.subheader("📌 Ajouter une Ligne d'Achat")
-
         col_p1, col_p2, col_p3, col_p4 = st.columns(4)
         with col_p1:
             p_ticker = st.selectbox(
@@ -278,22 +280,17 @@ else:
                 "Date d'achat :", datetime.date.today(), key="p_d"
             )
 
-        if st.button("➕ Ajouter la position au portefeuille"):
+        if st.button("➕ Ajouter au portefeuille"):
             ajouter_position(p_ticker, p_qte, p_prix, str(p_date))
             st.success(f"Position sur {p_ticker} ajoutée !")
             st.rerun()
 
         st.markdown("---")
-        st.subheader("💼 État Actuel du Portefeuille")
-
         df_port = charger_portefeuille()
 
         if df_port.empty:
-            st.info(
-                "Votre portefeuille est actuellement vide. Ajoutez une première position ci-dessus."
-            )
+            st.info("Votre portefeuille est actuellement vide.")
         else:
-            # Fusion avec le cours du jour
             df_merged = df_port.merge(
                 df_screening[["Ticker", "Cours (FCFA)"]],
                 left_on="ticker",
@@ -304,7 +301,6 @@ else:
                 df_merged["prix_achat"]
             )
 
-            # Calculs financiers par position
             df_merged["Cout Achat Brut"] = (
                 df_merged["quantite"] * df_merged["prix_achat"]
             )
@@ -333,7 +329,6 @@ else:
                 df_merged["Gain Net FCFA"] / df_merged["Investissement Total"]
             ) * 100
 
-            # Totaux Portefeuille
             tot_investi = df_merged["Investissement Total"].sum()
             tot_valeur_nette = df_merged["Valeur Nette Estimation"].sum()
             tot_gain_net = tot_valeur_nette - tot_investi
@@ -341,27 +336,18 @@ else:
                 (tot_gain_net / tot_investi) * 100 if tot_investi > 0 else 0
             )
 
-            # KPIs Globaux
             kp1, kp2, kp3, kp4 = st.columns(4)
-            kp1.metric(
-                "Capital Investi (frais inclus)", f"{tot_investi:,.0f} FCFA"
-            )
-            kp2.metric(
-                "Valeur Nette Portefeuille", f"{tot_valeur_nette:,.0f} FCFA"
-            )
+            kp1.metric("Capital Investi", f"{tot_investi:,.0f} FCFA")
+            kp2.metric("Valeur Nette", f"{tot_valeur_nette:,.0f} FCFA")
             kp3.metric(
-                "Plus/Moins-Value Nette",
+                "Gain Net FCFA",
                 f"{tot_gain_net:,.0f} FCFA",
                 delta=f"{tot_perf_pct:.2f}%",
             )
-            kp4.metric(
-                "Nombre de Lignes", len(df_merged)
-            )
+            kp4.metric("Lignes", len(df_merged))
 
             st.markdown("---")
-
-            # Affichage du Tableau avec option de suppression
-            cols_to_show = [
+            cols_show = [
                 "id",
                 "ticker",
                 "quantite",
@@ -373,7 +359,7 @@ else:
                 "Performance Net (%)",
             ]
             st.dataframe(
-                df_merged[cols_to_show].style.format(
+                df_merged[cols_show].style.format(
                     {
                         "prix_achat": "{:,.0f} FCFA",
                         "Cours Actuel": "{:,.0f} FCFA",
@@ -386,37 +372,91 @@ else:
                 use_container_width=True,
             )
 
-            # Suppression d'une ligne
-            with st.expander("🗑️ Supprimer une ligne du portefeuille"):
+            with st.expander("🗑️ Supprimer une ligne"):
                 del_id = st.selectbox(
-                    "Sélectionnez l'ID de la position à retirer :",
-                    df_merged["id"].tolist(),
+                    "ID à supprimer :", df_merged["id"].tolist()
                 )
-                if st.button("Confirmer la suppression"):
+                if st.button("Confirmer"):
                     supprimer_position(del_id)
-                    st.warning(f"Position ID {del_id} supprimée.")
                     st.rerun()
 
-            # Graphiques Portefeuille
-            st.markdown("---")
-            g1, g2 = st.columns(2)
-            with g1:
-                fig_pie = px.pie(
-                    df_merged,
-                    values="Valeur Nette Estimation",
-                    names="ticker",
-                    title="Répartition du Portefeuille par Action",
-                    hole=0.4,
-                )
-                st.plotly_chart(fig_pie, use_container_width=True)
+    # --- ONGLET 4 : ANALYSE FONDAMENTALE & VALUE ---
+    with tab4:
+        st.subheader("🔬 Analyse Fondamentale & Valuation (Graham / Value)")
 
-            with g2:
-                fig_bar = px.bar(
-                    df_merged,
-                    x="ticker",
-                    y="Gain Net FCFA",
-                    color="Gain Net FCFA",
-                    title="Gain / Perte Net par Titre (FCFA)",
-                    color_continuous_scale=["red", "green"],
+        ticker_fund = st.selectbox(
+            "Sélectionner une action à analyser :",
+            df_screening["Ticker"].unique(),
+            key="fund_select",
+        )
+
+        cours_f = (
+            df_screening.loc[
+                df_screening["Ticker"] == ticker_fund, "Cours (FCFA)"
+            ].values[0]
+            if not df_screening.empty
+            else 0
+        )
+
+        an = fundamentals.analyser_valeur_et_fondamentaux(ticker_fund, cours_f)
+
+        if an is None:
+            st.info(
+                f"Données fondamentales indisponibles pour **{ticker_fund}**."
+            )
+        else:
+            # En-tête Métriques
+            fc1, fc2, fc3, fc4 = st.columns(4)
+            fc1.metric("Score Fondamental", f"{an['score_composite']} / 100")
+            fc2.metric("Rendement Dividende", f"{an['dividend_yield']} %")
+            fc3.metric(
+                "Nombre de Graham",
+                f"{an['nombre_graham']:,.0f} FCFA",
+                delta=f"{an['marge_securite_graham']:.1f}% Marge",
+            )
+            fc4.metric("Capitalisation", f"{an['capitalisation']:,.0f} FCFA")
+
+            st.markdown("---")
+
+            # Cartes d'Analyse Ratios
+            r_col1, r_col2 = st.columns(2)
+            with r_col1:
+                st.markdown("### 📊 Valorisation & Rentabilité")
+                st.write(f"* **Nom de la Société** : `{an['nom']}`")
+                st.write(f"* **Secteur d'Activité** : `{an['secteur']}`")
+                st.write(
+                    f"* **BPA (Bénéfice Par Action)** : `{an['bpa']:,.2f} FCFA`"
                 )
-                st.plotly_chart(fig_bar, use_container_width=True)
+                st.write(
+                    f"* **VNC (Valeur Comptable)** : `{an['vnc']:,.2f} FCFA`"
+                )
+                st.write(f"* **P/E (Price to Earnings)** : `{an['pe_ratio']} x`")
+                st.write(f"* **P/B (Price to Book)** : `{an['pb_ratio']} x`")
+                st.write(f"* **ROE (Rentabilité FP)** : `{an['roe']} %`")
+
+            with r_col2:
+                st.markdown("### 💰 Dividende & Décote Graham")
+                st.write(
+                    f"* **Dividende par Action** : `{an['dividende']:,.2f} FCFA`"
+                )
+                st.write(
+                    f"* **Ratio de Distribution (Payout)** : `{an['payout_ratio']} %`"
+                )
+                st.write(
+                    f"* **Résultat Net Global Est.** : `{an['resultat_net_total']:,.0f} FCFA`"
+                )
+                st.write(
+                    f"* **Capitaux Propres Totaux Est.** : `{an['capitaux_propres_totaux']:,.0f} FCFA`"
+                )
+                st.write(
+                    f"* **Seuil Théorique de Graham** : `{an['nombre_graham']:,.0f} FCFA`"
+                )
+
+                if an["marge_securite_graham"] > 0:
+                    st.success(
+                        f"💡 **Décote de valeur** : L'action se négocie avec **{an['marge_securite_graham']:.1f}% de marge de sécurité** sous son prix de Graham."
+                    )
+                else:
+                    st.warning(
+                        f"⚠️ **Surcote relative** : Le cours actuel dépasse de **{abs(an['marge_securite_graham']):.1f}%** le Nombre de Graham."
+                    )
