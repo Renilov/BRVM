@@ -1,6 +1,17 @@
-# Cache Python
+# Cache Python (compilations)
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
 
 # Base de données locale
 *.db
+*.sqlite3
+
+# Environnements virtuels
+venv/
+.venv/
+env/
+
+# Clés et secrets Streamlit
+.streamlit/secrets.toml
