@@ -1,9 +1,12 @@
+import os
 import sqlite3
 import requests
 from bs4 import BeautifulSoup
 import pandas as pd
 
-# 1. Correspondance Tickers BRVM
+# Création automatique du dossier data/ s'il n'existe pas
+os.makedirs("data", exist_ok=True)
+
 TICKER_MAP = {
     "AFRICA GLOBAL": "AGLC", "BENIN": "BOAB", "BURKINA": "BOABF", 
     "BANK OF AFRICA CI": "BOAC", "MALI": "BOAM", "NIGER": "BOAN", 
@@ -18,7 +21,6 @@ TICKER_MAP = {
     "TOTAL CI": "TTLC", "TOTAL SN": "TTLS", "UNILEVER": "UNLC", "VIVO": "SHEC"
 }
 
-# 2. Base de données fondamentales de référence BRVM (Dividendes & PER)
 FUNDAMENTALS = {
     "SNTS": {"div": 1500, "per": 7.8, "detachement": "15/05/2026", "paiement": "28/05/2026"},
     "ORAC": {"div": 1500, "per": 9.2, "detachement": "02/06/2026", "paiement": "16/06/2026"},
@@ -80,14 +82,12 @@ def scraper_brvm_complet():
                     if cours <= 0:
                         continue
 
-                    # Identification du ticker
                     ticker = nom
                     for cle, symbol in TICKER_MAP.items():
                         if cle in nom:
                             ticker = symbol
                             break
 
-                    # Récupération des données fondamentales ou valeurs par défaut
                     f = FUNDAMENTALS.get(ticker, {"div": 0, "per": None, "detachement": "À préciser", "paiement": "À préciser"})
                     
                     div_net = f["div"]
@@ -114,15 +114,15 @@ def scraper_brvm_complet():
     df = pd.DataFrame(donnees).drop_duplicates(subset=["Ticker"])
     print(f"✅ {len(df)} actions enrichies avec succès !")
 
-    # Sauvegarde dans les bases SQLite
+    # Enregistrement sécurisé dans les bases SQLite
     for db in ["brvm.db", "data/brvm.db"]:
         try:
             conn = sqlite3.connect(db)
             df.to_sql("cours", conn, if_exists="replace", index=False)
             df.to_sql("screening", conn, if_exists="replace", index=False)
             conn.close()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Avertissement écriture DB ({db}): {e}")
 
 if __name__ == "__main__":
     scraper_brvm_complet()
