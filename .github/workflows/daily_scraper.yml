@@ -2,7 +2,6 @@ name: Scraping Quotidien BRVM
 
 on:
   schedule:
-    # Du lundi au vendredi à 17h30 UTC (après la clôture BRVM)
     - cron: '30 17 * * 1-5'
   workflow_dispatch:
 
@@ -26,8 +25,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Exécution du scraper
-        run: python scraper.py
+      - name: Exécution du scraper BOC PDF
+        run: python boc_scraper.py
 
       - name: Envoi des alertes Telegram
         run: python alerts.py
@@ -37,5 +36,5 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add brvm.db
-          git commit -m "Mise à jour automatique de la base $(date +'%Y-%m-%d')" || exit 0
+          git commit -m "Mise à jour automatique via BOC PDF $(date +'%Y-%m-%d')" || exit 0
           git push
