@@ -1,8 +1,9 @@
-name: BRVM Daily Scraper & Telegram Alerts
+name: Scraping Quotidien BRVM
 
 on:
   schedule:
-    - cron: '0 16 * * 1-5'
+    # Du lundi au vendredi à 17h30 UTC (après la clôture BRVM)
+    - cron: '30 17 * * 1-5'
   workflow_dispatch:
 
 permissions:
@@ -11,31 +12,30 @@ permissions:
 jobs:
   run-scraper:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Extraction du dépôt
-        uses: actions/checkout@v4
+      - name: Récupération du code
+        uses: actions/checkout@v3
 
-      - name: Configuration de Python 3.10
-        uses: actions/setup-python@v5
+      - name: Configuration de Python
+        uses: actions/setup-python@v4
         with:
           python-version: '3.10'
 
       - name: Installation des dépendances
         run: |
           python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install -r requirements.txt
 
       - name: Exécution du scraper
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          python scraper.py
+        run: python scraper.py
 
-      - name: Sauvegarde automatique de la base de données
+      - name: Envoi des alertes Telegram
+        run: python alerts.py
+
+      - name: Sauvegarde de la base de données SQLite
         run: |
-          git config --global user.name 'github-actions[bot]'
-          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-          git add *.db data/*.db 2>/dev/null || true
-          git diff --quiet && git diff --staged --quiet || (git commit -m "Auto: Mise à jour des cours BRVM [skip ci]" && git push)
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add brvm.db
+          git commit -m "Mise à jour automatique de la base $(date +'%Y-%m-%d')" || exit 0
+          git push
