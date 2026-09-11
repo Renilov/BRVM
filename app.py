@@ -415,10 +415,10 @@ if not df_filtre.empty:
 # --- EN-TÊTE ET ONGLETS PRINCIPAUX ---
 st.title("📊 BRVM Quantum Analytics")
 
-# Statut de mise à jour des données
-if not df_screening.empty and "date_maj" in df_screening.columns:
+# Statut de mise à jour et affichage clair de la date du BOC récupéré
+if not df_screening.empty and "date_maj" in df_screening.columns and not df_screening["date_maj"].isna().all():
     derniere_maj = df_screening["date_maj"].iloc[0]
-    st.caption(f"📅 **Dernière actualisation des cours :** {derniere_maj}")
+    st.info(f"📅 **Bulletin Officiel de la Cote (BOC)** — Données boursières du : **{derniere_maj}**")
 else:
     st.warning("⚠️ Aucune donnée boursière trouvée dans SQLite (`brvm.db`). Le robot d'actualisation la mettra à jour à la clôture du marché.")
 
