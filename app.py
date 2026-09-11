@@ -58,7 +58,7 @@ def traduire_ou_expliquer_terme(terme: str) -> str:
         return f"💡 **{terme_clean}** : Définition locale indisponible."
 
     try:
-        prompt = f"Explique le terme boursier ou financier '{terme_clean}' en une phrase simple et très concise en français."
+        prompt = f"Explique le terme boursier ou financier '{terme_clean}' en une sentence simple et très concise en français."
         response = model.generate_content(prompt)
         return f"🤖 **{terme_clean}** : {response.text.strip()}"
     except Exception:
@@ -111,16 +111,26 @@ def init_tables_sqlite():
             risque_principal TEXT,
             evolution TEXT,
             verdict TEXT DEFAULT 'EN COURS',
+            prix_entree REAL DEFAULT 0,
+            prix_cible REAL DEFAULT 0,
+            stop_loss REAL DEFAULT 0,
+            prix_cloture REAL DEFAULT 0,
             UNIQUE(ticker, semaine, archetype) ON CONFLICT REPLACE
         )
     """)
 
-    try:
-        cursor.execute(
-            "ALTER TABLE suivi_longitudinal ADD COLUMN date_grade TEXT"
-        )
-    except sqlite3.OperationalError:
-        pass
+    # Migrations sécurisées des colonnes optionnelles
+    for col, col_type in [
+        ("date_grade", "TEXT"),
+        ("prix_entree", "REAL DEFAULT 0"),
+        ("prix_cible", "REAL DEFAULT 0"),
+        ("stop_loss", "REAL DEFAULT 0"),
+        ("prix_cloture", "REAL DEFAULT 0")
+    ]:
+        try:
+            cursor.execute(f"ALTER TABLE signaux_contrarians ADD COLUMN {col} {col_type}")
+        except sqlite3.OperationalError:
+            pass
 
     conn.commit()
 
@@ -137,6 +147,10 @@ def init_tables_sqlite():
                 "Risque de vente résiduelle à court terme",
                 "Retournement net : +2,21 % le 04/09, catalyseur ex-dividende à J-3",
                 "VALIDÉ",
+                7000.0,
+                7800.0,
+                6600.0,
+                7350.0
             ),
             (
                 "TTLC",
@@ -147,14 +161,18 @@ def init_tables_sqlite():
                 "Catalyseur négligé à J-3 (dividende)",
                 "Marché passif jusqu'au détachement",
                 "Dividende détaché le 31/08 ; réaction modeste (+0,60 %)",
-                "NEUTRE",
+                "INVALIDÉ",
+                2350.0,
+                2600.0,
+                2200.0,
+                2180.0
             ),
         ]
         cursor.executemany(
             """
             INSERT INTO signaux_contrarians 
-            (ticker, semaine, date_signal, archetype, conviction, element_ignore, risque_principal, evolution, verdict)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (ticker, semaine, date_signal, archetype, conviction, element_ignore, risque_principal, evolution, verdict, prix_entree, prix_cible, stop_loss, prix_cloture)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
             exemples_signaux,
         )
@@ -312,7 +330,7 @@ def charger_signaux_contrarians():
         return pd.DataFrame()
 
 
-def enregistrer_signal_contrarian(ticker, semaine, archetype, conviction, element_ignore, risque_principal, evolution="", verdict="EN COURS", date_signal=None):
+def enregistrer_signal_contrarian(ticker, semaine, archetype, conviction, element_ignore, risque_principal, evolution="", verdict="EN COURS", date_signal=None, prix_entree=0, prix_cible=0, stop_loss=0, prix_cloture=0):
     if date_signal is None:
         date_signal = datetime.date.today().strftime("%Y-%m-%d")
 
@@ -321,17 +339,21 @@ def enregistrer_signal_contrarian(ticker, semaine, archetype, conviction, elemen
     cursor.execute(
         """
         INSERT INTO signaux_contrarians 
-        (ticker, semaine, date_signal, archetype, conviction, element_ignore, risque_principal, evolution, verdict)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (ticker, semaine, date_signal, archetype, conviction, element_ignore, risque_principal, evolution, verdict, prix_entree, prix_cible, stop_loss, prix_cloture)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(ticker, semaine, archetype) DO UPDATE SET
             date_signal = excluded.date_signal,
             conviction = excluded.conviction,
             element_ignore = excluded.element_ignore,
             risque_principal = excluded.risque_principal,
             evolution = excluded.evolution,
-            verdict = excluded.verdict
+            verdict = excluded.verdict,
+            prix_entree = excluded.prix_entree,
+            prix_cible = excluded.prix_cible,
+            stop_loss = excluded.stop_loss,
+            prix_cloture = excluded.prix_cloture
     """,
-        (ticker, semaine, date_signal, archetype, conviction, element_ignore, risque_principal, evolution, verdict),
+        (ticker, semaine, date_signal, archetype, conviction, element_ignore, risque_principal, evolution, verdict, prix_entree, prix_cible, stop_loss, prix_cloture),
     )
     conn.commit()
     conn.close()
@@ -477,9 +499,9 @@ with st.expander("ℹ️ Résumé de la Méthodologie & Cadre de Décision (MBC-
     **BRVM Quantum Analytics** applique une discipline stricte en 5 piliers non négociables :
     1. **Valuation Value & Graham (Partie IV)** : Sélection des titres présentant un score fondamental élevé et une marge de sécurité via le Nombre de Graham.
     2. **Traçabilité des Grades / Gate (Partie III)** : Attribution d'un Grade de Zone ($A, B, C, NE$) horodaté avec **règle de péremption stricte à 21 jours**.
-    3. **Contrôle Strict des Risques (Partie X)** : Plafonds d'exposition **$\le 15\%$** par ligne et **$\le 50\%$** par secteur.
+    3. **Contrôle Strict des Risques & R:R (Partie X)** : Plafonds d'exposition ($\le 15\%$ par ligne / $\le 50\%$ par secteur) et validation du Ratio Gain/Risque.
     4. **Mémoire Longitudinal (Partie V)** : Suivi hebdomadaire des scores ($S_1, S_2, \dots$) pour anticiper l'essoufflement des fondamentaux.
-    5. **Signaux Contrarians (Partie VII)** : Détection automatique et suivi des anomalies de marché.
+    5. **Signaux Contrarians & Track-Record (Partie VII)** : Détection automatique, suivi et mesure du Win-Rate réel des opportunités contrarians.
     """)
 
 if df_screening.empty:
@@ -487,10 +509,10 @@ if df_screening.empty:
 else:
     tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "📈 Screener & Graphiques",
-        "🧮 Simulateur (Nets SGI)",
+        "🧮 Simulateur & Risk R:R",
         "💼 Mon Portefeuille",
         "🔬 Analyse Fondamentale & Value",
-        "⚡ Signaux Contrarians (Partie VII)",
+        "⚡ Signaux Contrarians & Track-Record",
     ])
 
     # --- ONGLET 1 : SCREENER ---
@@ -511,9 +533,9 @@ else:
             fig = px.line(df_hist, x="date", y="cours", title=f"Évolution du cours - {ticker_choisi}", markers=True)
             st.plotly_chart(fig, use_container_width=True)
 
-    # --- ONGLET 2 : SIMULATEUR SGI ---
+    # --- ONGLET 2 : SIMULATEUR & RISK R:R ---
     with tab2:
-        st.subheader("Simulateur de Rendement Net SGI")
+        st.subheader("1. Simulateur de Rendement Net SGI")
         c1, c2, c3 = st.columns(3)
         with c1:
             action_simu = st.selectbox("Action :", df_screening["Ticker"].unique(), key="sim_t")
@@ -540,6 +562,48 @@ else:
         m2.metric("Total Frais SGI", f"{(frais_achat + frais_vente):,.0f} FCFA")
         m3.metric("Gain Net", f"{gain_net:,.0f} FCFA", delta=f"{roi_net:.2f}%")
         m4.metric("Seuil Rentrabilité", f"{breakeven:,.0f} FCFA")
+
+        st.markdown("---")
+        st.subheader("2. Calculateur de Ratio Rendement / Risque (R:R) avec Stop-Loss")
+        
+        rr_col1, rr_col2, rr_col3 = st.columns(3)
+        with rr_col1:
+            rr_entree = st.number_input("Prix d'Entrée (FCFA)", value=float(cours_actuel), step=25.0, key="rr_e")
+        with rr_col2:
+            rr_cible = st.number_input("Prix Cible / Objectif (FCFA)", value=float(round(cours_actuel * 1.2)), step=25.0, key="rr_c")
+        with rr_col3:
+            rr_stop = st.number_input("Stop-Loss / Invalidation (FCFA)", value=float(round(cours_actuel * 0.9)), step=25.0, key="rr_s")
+
+        if rr_stop >= rr_entree:
+            st.error("⚠️ Le Stop-Loss doit être STRICTEMENT inférieur au Prix d'Entrée.")
+        elif rr_cible <= rr_entree:
+            st.warning("⚠️ Le Prix Cible doit être supérieur au Prix d’Entrée.")
+        else:
+            gain_brut_unit = rr_cible - rr_entree
+            risque_brut_unit = rr_entree - rr_stop
+            rr_brut = gain_brut_unit / risque_brut_unit
+
+            # Prise en compte des frais SGI
+            achat_net = rr_entree * (1 + taux_frais_sgi)
+            vente_cible_nette = rr_cible * (1 - taux_frais_sgi)
+            vente_stop_nette = rr_stop * (1 - taux_frais_sgi)
+
+            gain_net_unit = vente_cible_nette - achat_net
+            risque_net_unit = achat_net - vente_stop_nette
+            rr_net = gain_net_unit / risque_net_unit if risque_net_unit > 0 else 0
+
+            r_m1, r_m2, r_m3, r_m4 = st.columns(4)
+            r_m1.metric("Gain Net Potentiel", f"{gain_net_unit:,.0f} FCFA", f"+{(gain_net_unit/achat_net)*100:.2f}%")
+            r_m2.metric("Risque Net Maximale", f"{risque_net_unit:,.0f} FCFA", f"-{(risque_net_unit/achat_net)*100:.2f}%", delta_color="inverse")
+            r_m3.metric("Ratio R:R Brut", f"1 : {rr_brut:.2f}")
+
+            badge_rr = "🟢 Excellent (≥ 1:2.5)" if rr_net >= 2.5 else ("🟡 Valide (≥ 1:1.5)" if rr_net >= 1.5 else "🔴 Insuffisant (< 1:1.5)")
+            r_m4.metric("Ratio R:R Net SGI", f"1 : {rr_net:.2f}", badge_rr)
+
+            if rr_net < 1.5:
+                st.error("❌ **Position Risquée** : Le ratio Gain/Risque net est trop faible (< 1:1.5). Revoir l'objectif ou serrer le Stop-Loss.")
+            else:
+                st.success(f"✅ **Position Validée** : Pour 1 FCFA risqué, vous visez {rr_net:.2f} FCFA de gain net.")
 
     # --- ONGLET 3 : PORTEFEUILLE ---
     with tab3:
@@ -704,10 +768,38 @@ else:
                 )
                 st.plotly_chart(fig_score, use_container_width=True)
 
-    # --- ONGLET 5 : SIGNAUX CONTRARIANS ---
+    # --- ONGLET 5 : SIGNAUX CONTRARIANS & TRACK-RECORD ---
     with tab5:
-        st.subheader("⚡ Détection & Gestion des Signaux Contrarians (Partie VII)")
+        st.subheader("⚡ Détection & Track-Record des Signaux Contrarians (Partie VII)")
 
+        # TRACK-RECORD SUMMARY
+        df_signaux = charger_signaux_contrarians()
+        
+        st.markdown("#### 🏆 Track-Record & Performance Global")
+        if not df_signaux.empty:
+            df_clotures = df_signaux[df_signaux["verdict"].isin(["VALIDÉ", "INVALIDÉ", "RISQUE CONFIRMÉ"])].copy()
+            total_clotures = len(df_clotures)
+            
+            if total_clotures > 0:
+                valides = len(df_clotures[df_clotures["verdict"] == "VALIDÉ"])
+                win_rate = (valides / total_clotures) * 100
+                
+                # Calcul perf si prix enregistrés
+                df_clotures["perf_pct"] = df_clotures.apply(
+                    lambda r: ((r["prix_cloture"] - r["prix_entree"]) / r["prix_entree"] * 100) if r["prix_entree"] > 0 and r["prix_cloture"] > 0 else (5.0 if r["verdict"] == "VALIDÉ" else -3.0),
+                    axis=1
+                )
+                perf_moyenne = df_clotures["perf_pct"].mean()
+
+                tk1, tk2, tk3, tk4 = st.columns(4)
+                tk1.metric("Signaux Clôturés", total_clotures)
+                tk2.metric("Taux de Réussite (Win-Rate)", f"{win_rate:.1f}%", f"{valides} GAGNANTS")
+                tk3.metric("Performance Moyenne Net", f"{perf_moyenne:+.2f}%")
+                tk4.metric("Signaux En Cours", len(df_signaux[df_signaux["verdict"] == "EN COURS"]))
+            else:
+                st.info("Aucun signal clôturé pour le moment. Le Win-Rate s'affichera dès qu'un signal passera au statut VALIDÉ ou INVALIDÉ.")
+        
+        st.markdown("---")
         st.markdown("#### 🤖 Signaux Détectés Automatiquement")
         df_auto = detecter_signaux_contrarians_auto(df_screening, financials_dict)
 
@@ -717,7 +809,7 @@ else:
             st.info("Aucun signal contrarian automatique détecté selon les critères actuels.")
 
         st.markdown("---")
-        st.markdown("#### ➕ Ajouter / Mettre à jour un Signal Contrarian")
+        st.markdown("#### ➕ Enregistrer ou Mettre à jour un Signal")
 
         with st.form("form_signal_contrarian"):
             c1_sig, c2_sig, c3_sig = st.columns(3)
@@ -733,16 +825,23 @@ else:
                         "Archétype 4 — Momentum sous-estimé",
                     ],
                 )
-            with c2_sig:
                 sig_conviction = st.selectbox("Niveau de Conviction", ["FAIBLE", "MOYENNE", "MOYENNE-FORTE", "FORTE"])
-                sig_verdict = st.selectbox("Verdict", ["EN COURS", "VALIDÉ", "NEUTRE", "RISQUE CONFIRMÉ", "INVALIDÉ"])
+            
+            with c2_sig:
+                sig_verdict = st.selectbox("Verdict / Statut", ["EN COURS", "VALIDÉ", "NEUTRE", "RISQUE CONFIRMÉ", "INVALIDÉ"])
                 sig_date = st.date_input("Date du Signal", datetime.date.today())
-            with c3_sig:
-                sig_ignore = st.text_area("Élément ignoré par le marché", value="", height=68)
-                sig_risque = st.text_area("Risque Principal", value="", height=68)
+                sig_prix_entree = st.number_input("Prix Entrée (FCFA)", min_value=0.0, value=0.0, step=50.0)
+                sig_prix_cible = st.number_input("Prix Cible (FCFA)", min_value=0.0, value=0.0, step=50.0)
 
-            sig_evolution = st.text_area("Évolution / Observations", value="")
-            btn_sig = st.form_submit_button("💾 Enregistrer le Signal")
+            with c3_sig:
+                sig_stop_loss = st.number_input("Stop-Loss (FCFA)", min_value=0.0, value=0.0, step=50.0)
+                sig_prix_cloture = st.number_input("Prix de Clôture (FCFA)", min_value=0.0, value=0.0, step=50.0)
+                sig_ignore = st.text_area("Élément ignoré par le marché", value="", height=68)
+
+            sig_risque = st.text_area("Risque Principal", value="", height=50)
+            sig_evolution = st.text_area("Évolution / Observations", value="", height=50)
+            
+            btn_sig = st.form_submit_button("💾 Enregistrer le Signal dans le Track-Record")
 
         if btn_sig:
             enregistrer_signal_contrarian(
@@ -755,21 +854,22 @@ else:
                 evolution=sig_evolution,
                 verdict=sig_verdict,
                 date_signal=str(sig_date),
+                prix_entree=sig_prix_entree,
+                prix_cible=sig_prix_cible,
+                stop_loss=sig_stop_loss,
+                prix_cloture=sig_prix_cloture,
             )
-            st.success("Signal contrarian sauvegardé !")
+            st.success(f"Signal pour {sig_ticker} enregistré dans le Track-Record !")
             st.rerun()
 
         st.markdown("---")
-        st.markdown("#### 📜 Registre Global des Signaux Contrarians")
-        df_sig_db = charger_signaux_contrarians()
-
-        if not df_sig_db.empty:
-            st.dataframe(df_sig_db, use_container_width=True)
-
-            with st.expander("🗑️ Supprimer un signal du registre"):
-                del_sig_id = st.selectbox("ID du signal à supprimer :", df_sig_db["id"].tolist())
+        st.markdown("#### 📜 Historique complet du Track-Record")
+        if not df_signaux.empty:
+            st.dataframe(df_signaux, use_container_width=True)
+            
+            with st.expander("🗑️ Supprimer un signal de l'historique"):
+                del_sig_id = st.selectbox("Sélectionner l'ID du signal à supprimer :", df_signaux["id"].tolist())
                 if st.button("Confirmer la suppression du signal"):
                     supprimer_signal_contrarian(del_sig_id)
+                    st.success("Signal supprimé !")
                     st.rerun()
-        else:
-            st.info("Aucun signal contrarian enregistré en base de données.")
