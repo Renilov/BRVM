@@ -15,7 +15,6 @@ st.set_page_config(
 )
 
 DB_NAME = "brvm.db"
-GEMINI_KEY = "AQ.Ab8RN6KFvWJxuK0G-aO4fpVz3O3IBAChZq3EKegcd67R1RfIgw"
 
 
 # --- LEXIQUE LOCAL & INTÉGRATION IA GEMINI ---
@@ -32,12 +31,8 @@ LEXIQUE_FINANCIER = {
 
 
 def get_gemini_model():
-    """Initialise l'API Gemini directement avec la clé configurée."""
-    api_key = (
-        st.secrets.get("GEMINI_API_KEY")
-        or os.getenv("GEMINI_API_KEY")
-        or GEMINI_KEY
-    )
+    """Initialise l'API Gemini via les secrets Streamlit ou la variable d'environnement."""
+    api_key = st.secrets.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY")
     if api_key:
         genai.configure(api_key=api_key)
         return genai.GenerativeModel("gemini-1.5-flash")
