@@ -680,7 +680,7 @@ with tab3:
         # --- BADGE DÉCISIONNEL AUTOMATIQUE ---
         if ratio_rr >= 2.0 and roi_net > 0:
             st.success(
-                f"🟢 **EXCELLENT RISK/REWARD ({ratio_rr:.2f}:1)** — Ce trade offers"
+                f"🟢 **EXCELLENT RISK/REWARD ({ratio_rr:.2f}:1)** — Ce trade offre"
                 " un potentiel de gain largement supérieur au risque encouru."
             )
         elif ratio_rr >= 1.0 and roi_net > 0:
@@ -765,7 +765,77 @@ with tab3:
                 })
             st.dataframe(pd.DataFrame(scenarios), use_container_width=True)
 
-import plotly.express as px
+        st.markdown("---")
+
+        # --- PROJECTIONS DE CAPITAL (3 MOIS, 6 MOIS, 1 AN) ---
+        st.markdown("### 🔮 Simulation de Projections Temporelles (3M, 6M, 1 An)")
+
+        cp_sim1, cp_sim2 = st.columns(2)
+        with cp_sim1:
+            rendement_annuel_sim = st.slider(
+                "Hypothèse de Rendement Annuel (%) :",
+                min_value=-20.0,
+                max_value=50.0,
+                value=float(round(roi_net, 1)) if roi_net != 0 else 12.0,
+                step=0.5,
+                key="tab3_rend_proj"
+            )
+        with cp_sim2:
+            yield_div_sim = st.slider(
+                "Rendement Dividende Estimé (%/an) :",
+                min_value=0.0,
+                max_value=15.0,
+                value=5.0,
+                step=0.5,
+                key="tab3_div_proj"
+            )
+
+        taux_annuel_comb = (rendement_annuel_sim + yield_div_sim) / 100.0
+        horizons_dict = {
+            "3 Mois": 0.25,
+            "6 Mois": 0.50,
+            "1 An": 1.00
+        }
+
+        proj_data = []
+        for h_name, h_years in horizons_dict.items():
+            valeur_future_brute = cout_total_achat * (1 + (taux_annuel_comb * h_years))
+            valeur_future_nette = valeur_future_brute * (1 - taux_frais_sgi)
+            gain_proj_net = valeur_future_nette - cout_total_achat
+            perf_proj_pct = (gain_proj_net / cout_total_achat) * 100 if cout_total_achat > 0 else 0
+
+            proj_data.append({
+                "Horizon": h_name,
+                "Valeur Nette Projetée (FCFA)": valeur_future_nette,
+                "Gain Net (FCFA)": gain_proj_net,
+                "Performance Nette (%)": perf_proj_pct
+            })
+
+        df_proj_sim = pd.DataFrame(proj_data)
+
+        col_kpi_proj, col_graph_proj = st.columns([1, 1.2])
+
+        with col_kpi_proj:
+            st.markdown("##### 📈 Projections du Capital Investi")
+            for _, r_p in df_proj_sim.iterrows():
+                st.metric(
+                    label=f"Horizon {r_p['Horizon']}",
+                    value=f"{r_p['Valeur Nette Projetée (FCFA)']:,.0f} FCFA".replace(",", " "),
+                    delta=f"{r_p['Gain Net (FCFA)']:+,0f} FCFA ({r_p['Performance Nette (%)']:+.2f}%)".replace(",", " ")
+                )
+
+        with col_graph_proj:
+            fig_sim_proj = px.bar(
+                df_proj_sim,
+                x="Horizon",
+                y="Gain Net (FCFA)",
+                text_auto=".0f",
+                title=f"Gain Net Projeté pour {quantite} actions {action_simu}",
+                color="Gain Net (FCFA)",
+                color_continuous_scale=["#EF553B", "#00CC96"]
+            )
+            fig_sim_proj.update_layout(margin=dict(t=35, b=10, l=10, r=10), showlegend=False)
+            st.plotly_chart(fig_sim_proj, use_container_width=True)
 
 # --- ONGLET 4 : MON PORTEFEUILLE & AIDE À LA DÉCISION ---
 with tab4:
@@ -964,6 +1034,78 @@ with tab4:
                     conn.close()
                     st.success(f"Ligne ID {id_to_delete} supprimée.")
                     st.rerun()
+
+        st.markdown("---")
+
+        # --- SECTION 6 : PROJECTIONS DU PORTEFEUILLE RÉEL (3M, 6M, 1 AN) ---
+        st.markdown("### 🔮 Projections d'Évolution du Portefeuille Réel")
+
+        cp_p1, cp_p2 = st.columns(2)
+        with cp_p1:
+            target_pv_port = st.slider(
+                "Hypothèse de Croissance des Cours (%/an) :",
+                min_value=-20.0,
+                max_value=40.0,
+                value=10.0,
+                step=0.5,
+                key="tab4_pv_proj"
+            )
+        with cp_p2:
+            target_div_port = st.slider(
+                "Hypothèse de Dividendes Globaux (%/an) :",
+                min_value=0.0,
+                max_value=15.0,
+                value=5.0,
+                step=0.5,
+                key="tab4_div_proj"
+            )
+
+        taux_port_annuel = (target_pv_port + target_div_port) / 100.0
+        horizons_port = {
+            "3 Mois": 0.25,
+            "6 Mois": 0.50,
+            "1 An": 1.00
+        }
+
+        res_port_proj = []
+        for h_label, h_val in horizons_port.items():
+            valeur_future_brute = total_valeur_nette * (1 + (taux_port_annuel * h_val))
+            valeur_future_nette = valeur_future_brute * (1 - taux_frais_sgi)
+            gain_port_net = valeur_future_nette - total_investi
+            perf_globale_proj = (gain_port_net / total_investi * 100) if total_investi > 0 else 0.0
+
+            res_port_proj.append({
+                "Horizon": h_label,
+                "Valeur Projetée Nette (FCFA)": valeur_future_nette,
+                "Plus-Value Cumulée Nette (FCFA)": gain_port_net,
+                "Rendement Glob. Net (%)": perf_globale_proj
+            })
+
+        df_p_proj = pd.DataFrame(res_port_proj)
+
+        col_p_kpi, col_p_chart = st.columns([1, 1.2])
+
+        with col_p_kpi:
+            st.markdown("##### 📈 Estimations Temporelles")
+            for _, row_p in df_p_proj.iterrows():
+                st.metric(
+                    label=f"Valeur Nette à {row_p['Horizon']}",
+                    value=f"{row_p['Valeur Projetée Nette (FCFA)']:,.0f} FCFA".replace(",", " "),
+                    delta=f"PV Cumulée : {row_p['Plus-Value Cumulée Nette (FCFA)']:+,0f} FCFA ({row_p['Rendement Glob. Net (%)']:+.2f}%)".replace(",", " ")
+                )
+
+        with col_p_chart:
+            fig_p_proj = px.bar(
+                df_p_proj,
+                x="Horizon",
+                y="Valeur Projetée Nette (FCFA)",
+                text_auto=".0f",
+                title="Trajectoire de Capital Net du Portefeuille",
+                color="Valeur Projetée Nette (FCFA)",
+                color_continuous_scale="Viridis"
+            )
+            fig_p_proj.update_layout(margin=dict(t=35, b=10, l=10, r=10), showlegend=False)
+            st.plotly_chart(fig_p_proj, use_container_width=True)
 
 # --- ONGLET 5 : ANALYSE FONDAMENTALE ---
 with tab5:
