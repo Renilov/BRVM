@@ -761,125 +761,205 @@ with tab3:
                 })
             st.dataframe(pd.DataFrame(scenarios), use_container_width=True)
 
-# --- ONGLET 4 : PORTEFEUILLE ---
+import plotly.express as px
+
+# --- ONGLET 4 : MON PORTEFEUILLE & AIDE À LA DÉCISION ---
 with tab4:
-    st.subheader("📌 Ajouter une Ligne d'Achat")
-    if not df_screening.empty:
-        col_p1, col_p2, col_p3, col_p4 = st.columns(4)
-        with col_p1:
-            p_ticker = st.selectbox(
-                "Action :", df_screening["Ticker"].unique(), key="p_tick"
-            )
-            cours_ref = df_screening.loc[
-                df_screening["Ticker"] == p_ticker, "Cours (FCFA)"
-            ].values[0]
-        with col_p2:
-            p_qte = st.number_input(
-                "Quantité :", min_value=1, value=50, key="p_q"
-            )
-        with col_p3:
-            p_prix = st.number_input(
-                "Prix d'Achat Unitaire (FCFA) :",
-                value=float(cours_ref),
-                step=50.0,
-                key="p_pr",
-            )
-        with col_p4:
-            p_date = st.date_input(
-                "Date d'achat :", datetime.date.today(), key="p_d"
-            )
+    st.subheader("💼 Gestion & Analyse Décisionnelle du Portefeuille")
 
-        if st.button("➕ Ajouter au portefeuille"):
-            ajouter_position(p_ticker, p_qte, p_prix, str(p_date))
-            st.success(f"Position sur {p_ticker} ajoutée !")
-            st.rerun()
+    # --- INITIALISATION AUTOMATIQUE & MIGRATION DE LA BASE SQL ---
+    try:
+        conn = sqlite3.connect("brvm.db")
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS portefeuille (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticker TEXT,
+                quantite INTEGER,
+                prix_achat REAL,
+                pru_reel REAL,
+                date_achat TEXT
+            )
+        """)
+        # Vérification / Migration si la colonne pru_reel n'existait pas
+        cursor.execute("PRAGMA table_info(portefeuille)")
+        colonnes_existantes = [col[1] for col in cursor.fetchall()]
+        if "pru_reel" not in colonnes_existantes:
+            cursor.execute("ALTER TABLE portefeuille ADD COLUMN pru_reel REAL")
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        st.error(f"Erreur d'initialisation SQL : {e}")
 
-    st.markdown("---")
-    df_port = charger_portefeuille()
+    # --- SECTION 1 : AJOUT D'UNE LIGNE D'ACHAT ---
+    with st.expander("➕ Ajouter / Enregistrer une Ligne d'Achat", expanded=False):
+        with st.form("form_ajout_portefeuille"):
+            c1, c2, c3, c4 = st.columns(4)
+            with c1:
+                ticker_p = st.selectbox("Action :", df_screening["Ticker"].unique(), key="port_t")
+                cours_ref = float(df_screening.loc[df_screening["Ticker"] == ticker_p, "Cours (FCFA)"].values[0]) if not df_screening.empty else 1000.0
+            with c2:
+                qte_p = st.number_input("Quantité", min_value=1, value=50, step=1)
+            with c3:
+                prix_p = st.number_input("Prix d'Achat Unitaire (FCFA)", min_value=1.0, value=cours_ref, step=50.0)
+            with c4:
+                date_p = st.date_input("Date d'achat")
+
+            btn_ajouter = st.form_submit_button("💾 Enregistrer dans le Portefeuille")
+
+            if btn_ajouter:
+                pru_reel = prix_p * (1 + taux_frais_sgi)
+                try:
+                    conn = sqlite3.connect("brvm.db")
+                    cursor = conn.cursor()
+                    cursor.execute(
+                        "INSERT INTO portefeuille (ticker, quantite, prix_achat, pru_reel, date_achat) VALUES (?, ?, ?, ?, ?)",
+                        (ticker_p, qte_p, prix_p, pru_reel, str(date_p))
+                    )
+                    conn.commit()
+                    conn.close()
+                    st.success(f"✅ {qte_p} actions {ticker_p} ajoutées au portefeuille !")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Erreur d'enregistrement : {e}")
+
+    # --- SECTION 2 : LECTURE ET CALCULS DU PORTEFEUILLE ---
+    try:
+        conn = sqlite3.connect("brvm.db")
+        df_port = pd.read_sql("SELECT * FROM portefeuille", conn)
+        conn.close()
+    except Exception:
+        df_port = pd.DataFrame()
 
     if df_port.empty:
-        st.info("Votre portefeuille est actuellement vide.")
+        st.info("💡 Votre portefeuille est actuellement vide. Ajoutez vos premières lignes ci-dessus.")
     else:
-        df_merged = df_port.merge(
-            df_screening[["Ticker", "Cours (FCFA)"]],
+        # Traitement pour les anciennes lignes où pru_reel était NULL
+        df_port["pru_reel"] = df_port["pru_reel"].fillna(df_port["prix_achat"] * (1 + taux_frais_sgi))
+
+        # Sélection sécurisée des colonnes de df_screening
+        cols_merge = [c for c in ["Ticker", "Cours (FCFA)", "Secteur"] if c in df_screening.columns]
+
+        # Fusion avec les cours actuels
+        df_port_merged = df_port.merge(
+            df_screening[cols_merge],
             left_on="ticker",
             right_on="Ticker",
-            how="left",
+            how="left"
         )
-        df_merged["Cours Actuel"] = df_merged["Cours (FCFA)"].fillna(
-            df_merged["prix_achat"]
-        )
-        df_merged["Cout Achat Brut"] = (
-            df_merged["quantite"] * df_merged["prix_achat"]
-        )
-        df_merged["Frais Achat"] = df_merged["Cout Achat Brut"] * taux_frais_sgi
-        df_merged["Investissement Total"] = (
-            df_merged["Cout Achat Brut"] + df_merged["Frais Achat"]
-        )
-        df_merged["Valeur Actuelle Brute"] = (
-            df_merged["quantite"] * df_merged["Cours Actuel"]
-        )
-        df_merged["Frais Vente Est."] = (
-            df_merged["Valeur Actuelle Brute"] * taux_frais_sgi
-        )
-        df_merged["Valeur Nette Estimation"] = (
-            df_merged["Valeur Actuelle Brute"] - df_merged["Frais Vente Est."]
-        )
-        df_merged["Gain Net FCFA"] = (
-            df_merged["Valeur Nette Estimation"]
-            - df_merged["Investissement Total"]
-        )
-        df_merged["Performance Net (%)"] = (
-            df_merged["Gain Net FCFA"] / df_merged["Investissement Total"]
-        ) * 100
-        df_merged["Secteur"] = df_merged["ticker"].apply(
-            lambda t: financials_dict.get(t, {}).get("Secteur", "Inconnu")
+        df_port_merged["Cours (FCFA)"] = df_port_merged["Cours (FCFA)"].fillna(df_port_merged["prix_achat"])
+
+        # Calculs Financiers par ligne
+        df_port_merged["Capital Investi (FCFA)"] = df_port_merged["quantite"] * df_port_merged["pru_reel"]
+        df_port_merged["Valeur Actuelle Nette (FCFA)"] = df_port_merged["quantite"] * df_port_merged["Cours (FCFA)"] * (1 - taux_frais_sgi)
+        df_port_merged["Plus-Value Nette (FCFA)"] = df_port_merged["Valeur Actuelle Nette (FCFA)"] - df_port_merged["Capital Investi (FCFA)"]
+        df_port_merged["Performance (%)"] = (df_port_merged["Plus-Value Nette (FCFA)"] / df_port_merged["Capital Investi (FCFA)"]) * 100
+
+        # Totaux Portefeuille
+        total_investi = df_port_merged["Capital Investi (FCFA)"].sum()
+        total_valeur_nette = df_port_merged["Valeur Actuelle Nette (FCFA)"].sum()
+        total_pv_nette = total_valeur_nette - total_investi
+        perf_globale_pct = (total_pv_nette / total_investi * 100) if total_investi > 0 else 0.0
+
+        df_port_merged["Poids (%)"] = (df_port_merged["Valeur Actuelle Nette (FCFA)"] / total_valeur_nette) * 100
+
+        # Avis Décisionnel Suggéré
+        def generer_avis(row):
+            if row["Poids (%)"] > 25.0:
+                return "⚠️ Alléger (Risque Concentration)"
+            elif row["Performance (%)"] >= 20.0:
+                return "🎯 Prise de Profit Partielle"
+            elif row["Performance (%)"] <= -12.0:
+                return "🚨 Niveau Stop Loss Atteint"
+            else:
+                return "🟢 Conserver"
+
+        df_port_merged["Décision Suggérée"] = df_port_merged.apply(generer_avis, axis=1)
+
+        st.markdown("---")
+
+        # --- SECTION 3 : METRIQUES GLOBALES (KPIS) ---
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("Capital Investi (avec PRU)", f"{total_investi:,.0f} FCFA".replace(",", " "))
+        k2.metric("Valeur Actuelle Nette", f"{total_valeur_nette:,.0f} FCFA".replace(",", " "))
+        k3.metric(
+            "Plus/Moins-Value Latente",
+            f"{total_pv_nette:+,.0f} FCFA".replace(",", " "),
+            delta=f"{perf_globale_pct:+.2f}%"
         )
 
-        tot_investi = df_merged["Investissement Total"].sum()
-        tot_valeur_nette = df_merged["Valeur Nette Estimation"].sum()
-        tot_gain_net = tot_valeur_nette - tot_investi
-        tot_perf_pct = (
-            (tot_gain_net / tot_investi) * 100 if tot_investi > 0 else 0
-        )
+        lignes_surconcentrees = df_port_merged[df_port_merged["Poids (%)"] > 25.0]
+        if not lignes_surconcentrees.empty:
+            tickers_alert = ", ".join(lignes_surconcentrees["ticker"].tolist())
+            k4.metric("Alerte Risque", "ÉLEVÉ", delta=f"Concentré sur {tickers_alert}", delta_color="inverse")
+        else:
+            k4.metric("Diversification", "OPTIMALE", delta="Aucune sur-exposition")
 
-        kp1, kp2, kp3, kp4 = st.columns(4)
-        kp1.metric("Capital Investi", f"{tot_investi:,.0f} FCFA")
-        kp2.metric("Valeur Nette Total", f"{tot_valeur_nette:,.0f} FCFA")
-        kp3.metric(
-            "Gain Net FCFA",
-            f"{tot_gain_net:,.0f} FCFA",
-            delta=f"{tot_perf_pct:.2f}%",
-        )
-        kp4.metric("Lignes Ouvertes", len(df_merged))
+        st.markdown("---")
 
-        cols_show = [
-            "id",
-            "ticker",
-            "Secteur",
-            "quantite",
-            "prix_achat",
-            "Cours Actuel",
-            "Investissement Total",
-            "Valeur Nette Estimation",
-            "Gain Net FCFA",
-            "Performance Net (%)",
-        ]
-        st.dataframe(df_merged[cols_show], use_container_width=True)
+        # --- SECTION 4 : VISUALISATION ---
+        col_g1, col_g2 = st.columns([1, 1])
 
-        st.markdown("##### 🗑️ Supprimer une ligne du portefeuille")
-        del_col1, del_col2 = st.columns([3, 1])
-        with del_col1:
-            pos_to_del = st.selectbox(
-                "Sélectionnez l'ID à supprimer :",
-                df_merged["id"].tolist(),
-                key="del_pos_select",
+        with col_g1:
+            st.markdown("##### 🍩 Allocation par Action")
+            fig_pie = px.pie(
+                df_port_merged,
+                names="ticker",
+                values="Valeur Actuelle Nette (FCFA)",
+                hole=0.4,
+                color_discrete_sequence=px.colors.qualitative.Set3
             )
-        with del_col2:
-            if st.button("❌ Supprimer Ligne"):
-                supprimer_position(pos_to_del)
-                st.success(f"Ligne #{pos_to_del} supprimée !")
-                st.rerun()
+            fig_pie.update_traces(textposition='inside', textinfo='percent+label')
+            fig_pie.update_layout(margin=dict(t=20, b=20, l=10, r=10), showlegend=False)
+            st.plotly_chart(fig_pie, use_container_width=True)
+
+        with col_g2:
+            st.markdown("##### 📊 Performance Nette par Ligne (%)")
+            fig_bar = px.bar(
+                df_port_merged,
+                x="ticker",
+                y="Performance (%)",
+                color="Performance (%)",
+                color_continuous_scale=["#EF553B", "#00CC96"],
+                text_auto=".1f"
+            )
+            fig_bar.update_layout(margin=dict(t=20, b=20, l=10, r=10), yaxis_title="Performance %")
+            st.plotly_chart(fig_bar, use_container_width=True)
+
+        # --- SECTION 5 : TABLEAU ET SUPPRESSION ---
+        st.markdown("##### 📑 Détail des Positions & Recommandations")
+
+        df_display = df_port_merged[[
+            "id", "ticker", "quantite", "pru_reel", "Cours (FCFA)",
+            "Capital Investi (FCFA)", "Valeur Actuelle Nette (FCFA)",
+            "Plus-Value Nette (FCFA)", "Performance (%)", "Poids (%)", "Décision Suggérée"
+        ]].copy()
+
+        df_display["pru_reel"] = df_display["pru_reel"].apply(lambda x: f"{x:,.0f} FCFA".replace(",", " "))
+        df_display["Cours (FCFA)"] = df_display["Cours (FCFA)"].apply(lambda x: f"{x:,.0f} FCFA".replace(",", " "))
+        df_display["Capital Investi (FCFA)"] = df_display["Capital Investi (FCFA)"].apply(lambda x: f"{x:,.0f} FCFA".replace(",", " "))
+        df_display["Valeur Actuelle Nette (FCFA)"] = df_display["Valeur Actuelle Nette (FCFA)"].apply(lambda x: f"{x:,.0f} FCFA".replace(",", " "))
+        df_display["Plus-Value Nette (FCFA)"] = df_display["Plus-Value Nette (FCFA)"].apply(lambda x: f"{x:+,.0f} FCFA".replace(",", " "))
+        df_display["Performance (%)"] = df_display["Performance (%)"].apply(lambda x: f"{x:+.2f}%")
+        df_display["Poids (%)"] = df_display["Poids (%)"].apply(lambda x: f"{x:.1f}%")
+
+        st.dataframe(df_display, use_container_width=True)
+
+        with st.expander("🗑️ Vendre ou Supprimer une Ligne du Portefeuille"):
+            col_del1, col_del2 = st.columns([2, 1])
+            with col_del1:
+                id_to_delete = st.selectbox("Sélectionner l'ID de la ligne à supprimer :", df_port_merged["id"].tolist())
+            with col_del2:
+                st.write("")
+                st.write("")
+                if st.button("❌ Supprimer la ligne", type="primary"):
+                    conn = sqlite3.connect("brvm.db")
+                    cursor = conn.cursor()
+                    cursor.execute("DELETE FROM portefeuille WHERE id = ?", (id_to_delete,))
+                    conn.commit()
+                    conn.close()
+                    st.success(f"Ligne ID {id_to_delete} supprimée.")
+                    st.rerun()
 
 # --- ONGLET 5 : ANALYSE FONDAMENTALE ---
 with tab5:
