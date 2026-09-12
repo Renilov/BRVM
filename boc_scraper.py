@@ -15,17 +15,47 @@ HEADERS = {
     )
 }
 
-# Mots-clés à ignorer impérativement
-EXCLUDED_KEYWORDS = {
-    "VENDREDI", "LUNDI", "MARDI", "MERCREDI", "JEUDI", "SAMEDI", "DIMANCHE",
-    "VOLUME", "VALEUR", "NOMBRE", "BASE", "PER", "TAUX", "TOTAL", "TITRE",
-    "SYMBOLE", "MARCHE", "COURS", "VARIATION", "SECTEUR", "INDICE", "BRVM",
-    "BULLETIN", "OFFICIEL", "COTE", "ERIUM", "PREVIOUS", "DERNIER", "ACTION"
+OFFICIAL_BRVM_TICKERS = {
+    "ABJC", "BICB", "BICC", "BNBC", "BOAB", "BOAC", "BOAM", "BOAN", "BOAS",
+    "CABC", "CFAC", "CIEC", "ECOC", "ETIT", "FTSC", "LNBB", "NEIC", "NSBC",
+    "NTLC", "ORAC", "ORGT", "PALC", "PRSC", "SAFC", "SCRC", "SDCC", "SDSC",
+    "SEMC", "SGBC", "SHEC", "SIBC", "SICC", "SIVC", "SLBC", "SMBC", "SNTS",
+    "SOGC", "SPHC", "STAC", "STBC", "TTLC", "TTLS", "UNLC", "UNXC"
 }
 
 
+def parse_float(val):
+    if not val:
+        return 0.0
+    val_clean = str(val).replace(",", ".").replace("%", "").strip()
+    cleaned = re.sub(r"[^\d.-]", "", val_clean)
+    if cleaned in ("", "-", ".", "-."):
+        return 0.0
+    try:
+        return float(cleaned)
+    except ValueError:
+        return 0.0
+
+
+def parse_int(val):
+    if not val:
+        return 0
+    cleaned = re.sub(r"[^\d]", "", str(val))
+    return int(cleaned) if cleaned else 0
+
+
+def convertir_cours(val_str, ticker=""):
+    val = parse_float(val_str)
+    if val <= 0:
+        return 0
+
+    if ticker.upper() != "ETIT" and val < 500:
+        val *= 1000.0
+
+    return int(round(val))
+
+
 def telecharger_boc_pdf():
-    """Télécharge le BOC le plus récent disponible."""
     url_page = "https://www.brvm.org/fr/bulletins-officiels-de-la-cote"
     today = datetime.date.today()
 
@@ -68,11 +98,14 @@ def telecharger_boc_pdf():
 
 
 def extraire_donnees_boc(pdf_path, date_maj):
-    """Extraction filtrée des actions réelles."""
     donnees = []
 
     with pdfplumber.open(pdf_path) as pdf:
         for page in pdf.pages:
+            text = (page.extract_text() or "").upper()
+            if "MARCHE DES OBLIGATIONS" in text or "CAPITALISATION SECTORIELLE" in text:
+                continue
+
             tableaux = page.extract_tables()
             for tableau in tableaux:
                 for ligne in tableau:
@@ -82,70 +115,81 @@ def extraire_donnees_boc(pdf_path, date_maj):
                     if len(ligne_propre) >= 4:
                         ticker = ligne_propre[0].upper().strip()
 
-                        # Validation stricte du ticker
-                        if ticker and ticker not in EXCLUDED_KEYWORDS and re.match(r"^[A-Z0-9]{3,8}$", ticker):
-                            try:
-                                # Nettoyage des chiffres (gestion des séparateurs de milliers)
-                                cours_str = ligne_propre[3].replace(" ", "").replace(",", ".")
-                                if not cours_str.replace(".", "", 1).isdigit():
-                                    continue
-                                cours = float(cours_str)
+                        if ticker in OFFICIAL_BRVM_TICKERS:
+                            cours = convertir_cours(ligne_propre[3], ticker)
+                            var_raw = ligne_propre[4] if len(ligne_propre) > 4 else "0"
+                            variation = parse_float(var_raw)
+                            vol_raw = ligne_propre[5] if len(ligne_propre) > 5 else "0"
+                            volume = parse_int(vol_raw)
 
-                                var_str = ligne_propre[4].replace(" ", "").replace(",", ".").replace("%", "") if len(ligne_propre) > 4 else "0"
-                                variation = float(var_str) if var_str.replace("-", "", 1).replace(".", "", 1).isdigit() else 0.0
+                            # Extraction PER si disponible dans le PDF
+                            per_val = "à déterminer"
+                            if len(ligne_propre) > 7:
+                                float_per = parse_float(ligne_propre[7])
+                                if float_per > 0:
+                                    per_val = str(float_per)
 
-                                vol_str = ligne_propre[5].replace(" ", "") if len(ligne_propre) > 5 else "0"
-                                volume = int(vol_str) if vol_str.isdigit() else 0
-
+                            if 0 < cours < 75000:
                                 donnees.append({
                                     "Ticker": ticker,
                                     "Nom": ticker,
                                     "Cours (FCFA)": cours,
                                     "Variation (%)": variation,
                                     "Volume": volume,
+                                    "PER": per_val,
+                                    "Dividende": "à déterminer",
+                                    "Date de détachement": "à déterminer",
+                                    "Date de paiement": "à déterminer",
                                     "date_maj": date_maj,
                                 })
-                            except (ValueError, IndexError):
-                                continue
 
-    df = pd.DataFrame(donnees).drop_duplicates(subset=["Ticker"])
+    df = pd.DataFrame(donnees)
+    if not df.empty:
+        df = df.drop_duplicates(subset=["Ticker"], keep="first")
     return df
 
 
 def reinitialiser_et_mettre_a_jour_sqlite(df):
-    """Purge les fausses données et enregistre les actions réelles."""
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
 
+    cursor.execute("DROP TABLE IF EXISTS screening")
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS screening (
+        CREATE TABLE screening (
             Ticker TEXT PRIMARY KEY,
             Nom TEXT,
-            "Cours (FCFA)" REAL,
+            "Cours (FCFA)" INTEGER,
             "Variation (%)" REAL,
             Volume INTEGER,
+            PER TEXT,
+            Dividende TEXT,
+            "Date de détachement" TEXT,
+            "Date de paiement" TEXT,
             date_maj TEXT
         )
     """)
 
-    # Nettoyage de la table pour éliminer les entêtes parasite enregistrés précédemment
-    cursor.execute("DELETE FROM screening")
-
     if df.empty:
-        print("⚠️ Aucune action valide extraite. Vérifiez la structure du PDF.")
+        print("⚠️ Aucune action valide extraite.")
         conn.commit()
         conn.close()
         return
 
     for _, row in df.iterrows():
         cursor.execute("""
-            INSERT OR REPLACE INTO screening (Ticker, Nom, "Cours (FCFA)", "Variation (%)", Volume, date_maj)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (row["Ticker"], row["Nom"], row["Cours (FCFA)"], row["Variation (%)"], row["Volume"], row["date_maj"]))
+            INSERT OR REPLACE INTO screening (
+                Ticker, Nom, "Cours (FCFA)", "Variation (%)", Volume, 
+                PER, Dividende, "Date de détachement", "Date de paiement", date_maj
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            row["Ticker"], row["Nom"], int(row["Cours (FCFA)"]), row["Variation (%)"], row["Volume"],
+            row["PER"], row["Dividende"], row["Date de détachement"], row["Date de paiement"], row["date_maj"]
+        ))
 
     conn.commit()
     conn.close()
-    print(f"✅ Base 'brvm.db' nettoyée et mise à jour avec {len(df)} véritables actions.")
+    print(f"✅ Base 'brvm.db' mise à jour avec {len(df)} actions et nouvelles colonnes.")
 
 
 if __name__ == "__main__":
