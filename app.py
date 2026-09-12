@@ -46,26 +46,30 @@ def get_gemini_model():
 
 @st.cache_data(show_spinner=False)
 def traduire_ou_expliquer_terme(terme: str) -> str:
-    """Consulte en priorité le dictionnaire local, puis Gemini si le terme est inconnu."""
+    """Interroge l'IA Gemini en priorité. Utilise le dictionnaire local uniquement en cas de panne."""
     if not terme or not str(terme).strip():
         return ""
 
     terme_clean = str(terme).strip()
     terme_upper = terme_clean.upper()
 
-    if terme_upper in LEXIQUE_FINANCIER:
-        return LEXIQUE_FINANCIER[terme_upper]
-
+    # 1. PRIORITÉ À L'IA GEMINI (Gère les pluriels, la casse et les phrases)
     model = get_gemini_model()
-    if not model:
-        return f"💡 **{terme_clean}** : Définition locale indisponible."
+    if model:
+        try:
+            prompt = f"Explique le terme boursier ou financier '{terme_clean}' (contexte BRVM si pertinent) de manière concise en 2 phrases maximum."
+            response = model.generate_content(prompt)
+            return f"🤖 **{terme_clean}** :\n{response.text.strip()}"
+        except Exception:
+            pass  # En cas d'erreur de clé ou de réseau, bascule sur le dictionnaire local
 
-    try:
-        prompt = f"Explique le terme boursier ou financier '{terme_clean}' en une sentence simple et très concise en français."
-        response = model.generate_content(prompt)
-        return f"🤖 **{terme_clean}** : {response.text.strip()}"
-    except Exception:
-        return f"💡 **{terme_clean}** : Définition temporairement indisponible."
+    # 2. SECOURS (FALLBACK) SUR LE DICTIONNAIRE LOCAL
+    # Recherche flexible (match partiel pour tolérer le pluriel)
+    for cle, definition in LEXIQUE_FINANCIER.items():
+        if cle in terme_upper or terme_upper in cle:
+            return f"📚 **{cle} (Lexique local)** :\n{definition}"
+
+    return f"💡 **{terme_clean}** : Service IA indisponible et terme inconnu du dictionnaire local."
 
 
 # --- INITIALISATION BDD SQLITE ---
