@@ -821,7 +821,7 @@ with tab3:
                 st.metric(
                     label=f"Horizon {r_p['Horizon']}",
                     value=f"{r_p['Valeur Nette Projetée (FCFA)']:,.0f} FCFA".replace(",", " "),
-                    delta=f"{r_p['Gain Net (FCFA)']:+,0f} FCFA ({r_p['Performance Nette (%)']:+.2f}%)".replace(",", " ")
+                    delta=f"{r_p['Gain Net (FCFA)']:+,.0f} FCFA ({r_p['Performance Nette (%)']:+.2f}%)".replace(",", " ")
                 )
 
         with col_graph_proj:
@@ -1091,7 +1091,7 @@ with tab4:
                 st.metric(
                     label=f"Valeur Nette à {row_p['Horizon']}",
                     value=f"{row_p['Valeur Projetée Nette (FCFA)']:,.0f} FCFA".replace(",", " "),
-                    delta=f"PV Cumulée : {row_p['Plus-Value Cumulée Nette (FCFA)']:+,0f} FCFA ({row_p['Rendement Glob. Net (%)']:+.2f}%)".replace(",", " ")
+                    delta=f"PV Cumulée : {row_p['Plus-Value Cumulée Nette (FCFA)']:+,.0f} FCFA ({row_p['Rendement Glob. Net (%)']:+.2f}%)".replace(",", " ")
                 )
 
         with col_p_chart:
