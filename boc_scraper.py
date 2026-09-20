@@ -16,11 +16,50 @@ HEADERS = {
 }
 
 OFFICIAL_BRVM_TICKERS = {
-    "ABJC", "BICB", "BICC", "BNBC", "BOAB", "BOAC", "BOAM", "BOAN", "BOAS",
-    "CABC", "CFAC", "CIEC", "ECOC", "ETIT", "FTSC", "LNBB", "NEIC", "NSBC",
-    "NTLC", "ORAC", "ORGT", "PALC", "PRSC", "SAFC", "SCRC", "SDCC", "SDSC",
-    "SEMC", "SGBC", "SHEC", "SIBC", "SICC", "SIVC", "SLBC", "SMBC", "SNTS",
-    "SOGC", "SPHC", "STAC", "STBC", "TTLC", "TTLS", "UNLC", "UNXC"
+    "ABJC",
+    "BICB",
+    "BICC",
+    "BNBC",
+    "BOAB",
+    "BOAC",
+    "BOAM",
+    "BOAN",
+    "BOAS",
+    "CABC",
+    "CFAC",
+    "CIEC",
+    "ECOC",
+    "ETIT",
+    "FTSC",
+    "LNBB",
+    "NEIC",
+    "NSBC",
+    "NTLC",
+    "ORAC",
+    "ORGT",
+    "PALC",
+    "PRSC",
+    "SAFC",
+    "SCRC",
+    "SDCC",
+    "SDSC",
+    "SEMC",
+    "SGBC",
+    "SHEC",
+    "SIBC",
+    "SICC",
+    "SIVC",
+    "SLBC",
+    "SMBC",
+    "SNTS",
+    "SOGC",
+    "SPHC",
+    "STAC",
+    "STBC",
+    "TTLC",
+    "TTLS",
+    "UNLC",
+    "UNXC",
 }
 
 
@@ -66,9 +105,18 @@ def telecharger_boc_pdf():
             for a in soup.find_all("a", href=True):
                 href = a["href"].lower()
                 if ".pdf" in href and ("boc" in href or "bulletin" in href):
-                    pdf_url = a["href"] if a["href"].startswith("http") else "https://www.brvm.org" + a["href"]
-                    pdf_res = requests.get(pdf_url, headers=HEADERS, timeout=20)
-                    if pdf_res.status_code == 200 and len(pdf_res.content) > 10000:
+                    pdf_url = (
+                        a["href"]
+                        if a["href"].startswith("http")
+                        else "https://www.brvm.org" + a["href"]
+                    )
+                    pdf_res = requests.get(
+                        pdf_url, headers=HEADERS, timeout=20
+                    )
+                    if (
+                        pdf_res.status_code == 200
+                        and len(pdf_res.content) > 10000
+                    ):
                         file_path = "boc_temp.pdf"
                         with open(file_path, "wb") as f:
                             f.write(pdf_res.content)
@@ -103,7 +151,10 @@ def extraire_donnees_boc(pdf_path, date_maj):
     with pdfplumber.open(pdf_path) as pdf:
         for page in pdf.pages:
             text = (page.extract_text() or "").upper()
-            if "MARCHE DES OBLIGATIONS" in text or "CAPITALISATION SECTORIELLE" in text:
+            if (
+                "MARCHE DES OBLIGATIONS" in text
+                or "CAPITALISATION SECTORIELLE" in text
+            ):
                 continue
 
             tableaux = page.extract_tables()
@@ -111,26 +162,49 @@ def extraire_donnees_boc(pdf_path, date_maj):
                 for ligne in tableau:
                     if not ligne:
                         continue
-                    ligne_propre = [str(cell).strip().replace("\n", " ") if cell else "" for cell in ligne]
-                    if len(ligne_propre) >= 4:
-                        ticker = ligne_propre[0].upper().strip()
+                    ligne_propre = [
+                        str(cell).strip().replace("\n", " ") if cell else ""
+                        for cell in ligne
+                    ]
+                    if len(ligne_propre) < 4:
+                        continue
 
-                        if ticker in OFFICIAL_BRVM_TICKERS:
-                            cours = convertir_cours(ligne_propre[3], ticker)
-                            var_raw = ligne_propre[4] if len(ligne_propre) > 4 else "0"
-                            variation = parse_float(var_raw)
-                            vol_raw = ligne_propre[5] if len(ligne_propre) > 5 else "0"
-                            volume = parse_int(vol_raw)
+                    ticker = ligne_propre[0].upper().strip()
 
-                            # Extraction PER si disponible dans le PDF
-                            per_val = "à déterminer"
-                            if len(ligne_propre) > 7:
-                                float_per = parse_float(ligne_propre[7])
-                                if float_per > 0:
-                                    per_val = str(float_per)
+                    if ticker in OFFICIAL_BRVM_TICKERS:
+                        n_cols = len(ligne_propre)
 
-                            if 0 < cours < 75000:
-                                donnees.append({
+                        # Alignement selon la structure exacte du tableau BOC (10 à 12 colonnes)
+                        if n_cols >= 10:
+                            cours_raw = ligne_propre[6]  # Cours de Clôture réel
+                            var_raw = ligne_propre[7]  # Variation %
+                            vol_raw = ligne_propre[8]  # Volume (Quantité)
+                            per_raw = (
+                                ligne_propre[10] if n_cols > 10 else ""
+                            )  # PER
+                        else:
+                            # Mode secours si le tableau PDF a moins de colonnes
+                            cours_raw = (
+                                ligne_propre[3] if n_cols > 3 else "0"
+                            )
+                            var_raw = ligne_propre[4] if n_cols > 4 else "0"
+                            vol_raw = ligne_propre[5] if n_cols > 5 else "0"
+                            per_raw = ""
+
+                        cours = convertir_cours(cours_raw, ticker)
+                        variation = parse_float(var_raw)
+                        volume = parse_int(vol_raw)
+
+                        # Validation du PER (un PER doit être un ratio réaliste, généralement entre 1 et 100)
+                        per_val = "à déterminer"
+                        if per_raw:
+                            float_per = parse_float(per_raw)
+                            if 0 < float_per < 150:
+                                per_val = str(float_per)
+
+                        if 0 < cours < 150000:
+                            donnees.append(
+                                {
                                     "Ticker": ticker,
                                     "Nom": ticker,
                                     "Cours (FCFA)": cours,
@@ -141,7 +215,8 @@ def extraire_donnees_boc(pdf_path, date_maj):
                                     "Date de détachement": "à déterminer",
                                     "Date de paiement": "à déterminer",
                                     "date_maj": date_maj,
-                                })
+                                }
+                            )
 
     df = pd.DataFrame(donnees)
     if not df.empty:
@@ -176,20 +251,33 @@ def reinitialiser_et_mettre_a_jour_sqlite(df):
         return
 
     for _, row in df.iterrows():
-        cursor.execute("""
+        cursor.execute(
+            """
             INSERT OR REPLACE INTO screening (
                 Ticker, Nom, "Cours (FCFA)", "Variation (%)", Volume, 
                 PER, Dividende, "Date de détachement", "Date de paiement", date_maj
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            row["Ticker"], row["Nom"], int(row["Cours (FCFA)"]), row["Variation (%)"], row["Volume"],
-            row["PER"], row["Dividende"], row["Date de détachement"], row["Date de paiement"], row["date_maj"]
-        ))
+        """,
+            (
+                row["Ticker"],
+                row["Nom"],
+                int(row["Cours (FCFA)"]),
+                row["Variation (%)"],
+                row["Volume"],
+                row["PER"],
+                row["Dividende"],
+                row["Date de détachement"],
+                row["Date de paiement"],
+                row["date_maj"],
+            ),
+        )
 
     conn.commit()
     conn.close()
-    print(f"✅ Base 'brvm.db' mise à jour avec {len(df)} actions et nouvelles colonnes.")
+    print(
+        f"✅ Base 'brvm.db' mise à jour avec {len(df)} actions et données réalignées !"
+    )
 
 
 if __name__ == "__main__":
